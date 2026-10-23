@@ -12,8 +12,10 @@ Built with Unity 6 LTS, Universal Render Pipeline and AR Foundation (ARCore on A
 | `ProjectSettings/ProjectVersion.txt` | Editor version (Unity 6000.0 LTS) |
 | `Assets/Scripts/ProceduralGuitar.cs` | Builds a simple guitar from primitives (placeholder until a real model is imported) |
 | `Assets/Scripts/GuitarPlacer.cs` | Tap a detected plane to place the guitar; tap again to move it |
-| `Assets/Scripts/GuitarBodyAttacher.cs` | Hangs the guitar on the torso of a person found by ARKit body tracking |
-| `Assets/Scripts/GuitarModeSwitcher.cs` | On-screen button switching between *on a person* and *on a surface* |
+| `Assets/Scripts/GuitarWearer.cs` | Shared logic for wearing the guitar on a torso: pose, smoothing, pop-in animation |
+| `Assets/Scripts/GuitarBodyAttacher.cs` | Back camera: hangs the guitar on a person found by ARKit body tracking |
+| `Assets/Scripts/GuitarSelfieAttacher.cs` | Front camera: hangs the guitar on you, estimated from your face |
+| `Assets/Scripts/GuitarModeSwitcher.cs` | On-screen buttons switching between *on a person*, *selfie* and *on a surface* |
 | `Assets/Editor/GuitarARProjectSetup.cs` | **Guitar AR → Set Up Project** menu: URP + AR background, player settings, AR scene |
 | `.claude/skills/` | Unity's agent skills (`npx skills add Unity-Technologies/skills`) |
 
@@ -47,10 +49,14 @@ The app starts in **on a person** mode: point the camera at someone so their who
 frame, and the guitar appears on their torso. Body tracking needs an iPhone with an A12 chip or
 newer; it isn't available on Android.
 
-Tap the button at the bottom to switch to **on a surface** mode: move the phone slowly over a
+**Selfie** mode uses the front camera: look into it and the guitar appears below your face. ARKit
+can't track bodies with the front camera, so the torso is estimated from the face (needs Face
+Tracking ticked under XR Plug-in Management → Apple ARKit).
+
+In **on a surface** mode, move the phone slowly over a
 floor or table until the translucent plane appears, then tap it.
 
-ARKit can't track bodies and detect planes in the same session, so only one mode runs at a time.
+ARKit can't track bodies, track faces and detect planes in the same session, so only one mode runs at a time.
 
 ## Next steps
 

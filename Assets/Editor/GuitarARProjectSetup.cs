@@ -150,8 +150,8 @@ namespace GuitarAR.Editor
             planeManager.requestedDetectionMode = PlaneDetectionMode.Horizontal;
             originGo.AddComponent<ARRaycastManager>();
             originGo.AddComponent<GuitarPlacer>();
-            originGo.AddComponent<ARHumanBodyManager>();
             originGo.AddComponent<GuitarBodyAttacher>();
+            originGo.AddComponent<GuitarSelfieAttacher>();
             originGo.AddComponent<GuitarModeSwitcher>();
 
             EnsureFolder(Path.GetDirectoryName(k_ScenePath));

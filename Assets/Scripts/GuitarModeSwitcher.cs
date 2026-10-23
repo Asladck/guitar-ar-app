@@ -6,26 +6,33 @@ namespace GuitarAR
 {
     public enum GuitarMode
     {
-        /// <summary>The guitar hangs on a person found by body tracking.</summary>
+        /// <summary>The guitar hangs on a person seen by the back camera (body tracking).</summary>
         Body,
+        /// <summary>The guitar hangs on the person looking into the front camera.</summary>
+        Selfie,
         /// <summary>Tap a detected plane to put the guitar there.</summary>
         Surface,
     }
 
     /// <summary>
-    /// Switches between wearing the guitar on a tracked body and placing it on a surface.
-    /// ARKit can't run body tracking and plane detection in one session, so only one of
-    /// the two managers is enabled at a time. Draws the on-screen switch button and hints.
+    /// Switches between wearing the guitar on a tracked body (back camera), on yourself
+    /// (front camera) and placing it on a surface. ARKit runs one of body tracking, face
+    /// tracking or plane detection per session, so only one mode's manager is enabled at a time.
+    /// Draws the on-screen mode buttons and hints.
     /// </summary>
     public class GuitarModeSwitcher : MonoBehaviour
     {
         [SerializeField] GuitarMode m_StartMode = GuitarMode.Body;
+
+        // In GuitarMode order.
+        static readonly string[] k_ModeLabels = { "На человеке", "Селфи", "На поверхности" };
 
         static Rect s_ButtonRect;
 
         ARPlaneManager m_PlaneManager;
         GuitarPlacer m_Placer;
         GuitarBodyAttacher m_BodyAttacher;
+        GuitarSelfieAttacher m_SelfieAttacher;
         GuitarMode m_Mode;
         GUIStyle m_ButtonStyle;
         GUIStyle m_HintStyle;
@@ -34,7 +41,7 @@ namespace GuitarAR
 
         /// <summary>
         /// True if a screen position (pixels, origin bottom-left, as from touch input) is on the
-        /// switch button, so taps on it don't also place the guitar.
+        /// mode buttons, so taps on it don't also place the guitar.
         /// </summary>
         public static bool IsOverButton(Vector2 screenPosition)
         {
@@ -48,15 +55,16 @@ namespace GuitarAR
         static void EnsureInScene()
         {
             var origin = Object.FindAnyObjectByType<XROrigin>();
-            if (origin == null || origin.GetComponent<GuitarModeSwitcher>() != null)
+            if (origin == null)
                 return;
 
             var go = origin.gameObject;
-            if (go.GetComponent<ARHumanBodyManager>() == null)
-                go.AddComponent<ARHumanBodyManager>();
             if (go.GetComponent<GuitarBodyAttacher>() == null)
                 go.AddComponent<GuitarBodyAttacher>();
-            go.AddComponent<GuitarModeSwitcher>();
+            if (go.GetComponent<GuitarSelfieAttacher>() == null)
+                go.AddComponent<GuitarSelfieAttacher>();
+            if (go.GetComponent<GuitarModeSwitcher>() == null)
+                go.AddComponent<GuitarModeSwitcher>();
         }
 
         void Awake()
@@ -64,6 +72,7 @@ namespace GuitarAR
             m_PlaneManager = GetComponent<ARPlaneManager>();
             m_Placer = GetComponent<GuitarPlacer>();
             m_BodyAttacher = GetComponent<GuitarBodyAttacher>();
+            m_SelfieAttacher = GetComponent<GuitarSelfieAttacher>();
         }
 
         void Start()
@@ -76,8 +85,11 @@ namespace GuitarAR
             m_Mode = mode;
             bool surface = mode == GuitarMode.Surface;
 
-            if (m_BodyAttacher != null)
-                m_BodyAttacher.enabled = !surface;
+            // Turn the old mode off before the new one on, so the session never asks for both.
+            if (m_BodyAttacher != null && mode != GuitarMode.Body)
+                m_BodyAttacher.enabled = false;
+            if (m_SelfieAttacher != null && mode != GuitarMode.Selfie)
+                m_SelfieAttacher.enabled = false;
 
             if (m_PlaneManager != null)
             {
@@ -92,19 +104,24 @@ namespace GuitarAR
                 if (m_Placer.PlacedGuitar != null)
                     m_Placer.PlacedGuitar.SetActive(surface);
             }
+
+            if (m_BodyAttacher != null && mode == GuitarMode.Body)
+                m_BodyAttacher.enabled = true;
+            if (m_SelfieAttacher != null && mode == GuitarMode.Selfie)
+                m_SelfieAttacher.enabled = true;
         }
 
         void OnGUI()
         {
             EnsureStyles();
 
-            float width = Screen.width * 0.6f;
+            float width = Screen.width * 0.9f;
             float height = Screen.height * 0.065f;
             s_ButtonRect = new Rect((Screen.width - width) * 0.5f, Screen.height - height - Screen.height * 0.06f, width, height);
 
-            string label = m_Mode == GuitarMode.Body ? "Режим: на теле" : "Режим: на поверхности";
-            if (GUI.Button(s_ButtonRect, label, m_ButtonStyle))
-                SetMode(m_Mode == GuitarMode.Body ? GuitarMode.Surface : GuitarMode.Body);
+            int selected = GUI.Toolbar(s_ButtonRect, (int)m_Mode, k_ModeLabels, m_ButtonStyle);
+            if (selected != (int)m_Mode)
+                SetMode((GuitarMode)selected);
 
             string hint = Hint();
             if (!string.IsNullOrEmpty(hint))
@@ -119,11 +136,20 @@ namespace GuitarAR
             if (m_Mode == GuitarMode.Surface)
                 return m_Placer != null && m_Placer.PlacedGuitar == null ? "Найди пол или стол и нажми на плоскость" : null;
 
+            if (m_Mode == GuitarMode.Selfie)
+            {
+                if (m_SelfieAttacher == null)
+                    return null;
+                if (!m_SelfieAttacher.IsSupported)
+                    return "Это устройство не поддерживает переднюю AR-камеру";
+                return m_SelfieAttacher.IsTracking ? null : "Посмотри в переднюю камеру";
+            }
+
             if (m_BodyAttacher == null)
                 return null;
             if (!m_BodyAttacher.IsSupported)
                 return "Это устройство не поддерживает отслеживание тела";
-            return m_BodyAttacher.IsTrackingBody ? null : "Наведи камеру на человека, чтобы он был виден целиком";
+            return m_BodyAttacher.IsTracking ? null : "Наведи камеру на человека, чтобы он был виден целиком";
         }
 
         void EnsureStyles()
@@ -131,7 +157,7 @@ namespace GuitarAR
             if (m_ButtonStyle != null)
                 return;
 
-            int fontSize = Mathf.RoundToInt(Screen.height * 0.022f);
+            int fontSize = Mathf.RoundToInt(Screen.height * 0.018f);
             m_ButtonStyle = new GUIStyle(GUI.skin.button) { fontSize = fontSize, fontStyle = FontStyle.Bold };
             m_HintStyle = new GUIStyle(GUI.skin.label)
             {
