@@ -17,6 +17,8 @@ namespace GuitarAR
 
         ARFaceManager m_FaceManager;
         ARCameraManager m_CameraManager;
+        ARSession m_Session;
+        TrackingMode m_PreviousTrackingMode = TrackingMode.PositionAndRotation;
 
         public override bool IsSupported => m_FaceManager != null && m_FaceManager.subsystem != null;
 
@@ -26,6 +28,7 @@ namespace GuitarAR
             var cam = Camera.main;
             if (cam != null)
                 m_CameraManager = cam.GetComponent<ARCameraManager>();
+            m_Session = Object.FindAnyObjectByType<ARSession>();
         }
 
         void OnEnable()
@@ -33,6 +36,15 @@ namespace GuitarAR
             m_FaceManager.enabled = true;
             if (m_CameraManager != null)
                 m_CameraManager.requestedFacingDirection = CameraFacingDirection.User;
+
+            // The session asks for full position tracking by default. Only the back-camera
+            // configuration (world tracking with face tracking on the side) offers that, so
+            // ARKit would keep the back camera. Dropping the request lets it pick the front one.
+            if (m_Session != null)
+            {
+                m_PreviousTrackingMode = m_Session.requestedTrackingMode;
+                m_Session.requestedTrackingMode = TrackingMode.DontCare;
+            }
         }
 
         protected override void OnDisable()
@@ -41,6 +53,8 @@ namespace GuitarAR
                 m_FaceManager.enabled = false;
             if (m_CameraManager != null)
                 m_CameraManager.requestedFacingDirection = CameraFacingDirection.World;
+            if (m_Session != null)
+                m_Session.requestedTrackingMode = m_PreviousTrackingMode;
             base.OnDisable();
         }
 

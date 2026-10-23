@@ -541,7 +541,7 @@ PlayerSettings:
   enableInternalProfiler: 0
   logObjCUncaughtExceptions: 1
   enableCrashReportAPI: 0
-  cameraUsageDescription: The camera is used to place a guitar in your room.
+  cameraUsageDescription: The camera is used to place a guitar in your room or on a person.
   locationUsageDescription: 
   microphoneUsageDescription: 
   bluetoothUsageDescription: 
@@ -805,7 +805,7 @@ PlayerSettings:
   scriptingDefineSymbols:
     Standalone: SENTIS_ANALYTICS_ENABLED;APP_UI_EDITOR_ONLY
     WebGL: SENTIS_ANALYTICS_ENABLED;APP_UI_EDITOR_ONLY
-    iPhone: APP_UI_EDITOR_ONLY;SENTIS_ANALYTICS_ENABLED;UNITY_XR_ARKIT_LOADER_ENABLED
+    iPhone: APP_UI_EDITOR_ONLY;SENTIS_ANALYTICS_ENABLED;UNITY_XR_ARKIT_FACE_TRACKING_ENABLED;UNITY_XR_ARKIT_LOADER_ENABLED
   additionalCompilerArguments: {}
   platformArchitecture: {}
   scriptingBackend:
