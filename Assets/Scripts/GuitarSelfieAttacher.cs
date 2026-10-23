@@ -22,6 +22,10 @@ namespace GuitarAR
 
         public override bool IsSupported => m_FaceManager != null && m_FaceManager.subsystem != null;
 
+        // The front camera image is shown mirrored like a selfie, so the guitar has to be a mirror
+        // image too. A plain rotation can't do that: it either holds it left-handed or shows its back.
+        protected override bool Mirrored => true;
+
         void Awake()
         {
             m_FaceManager = GetComponent<ARFaceManager>();
@@ -101,9 +105,7 @@ namespace GuitarAR
             if (forward.sqrMagnitude < 1e-6f)
                 return false;
 
-            // ARKit mirrors the front camera's world like a selfie, so the person's right comes
-            // out flipped compared to the back camera.
-            right = Vector3.Cross(forward, up);
+            right = Vector3.Cross(up, forward);
             belly = face.transform.position - up * m_FaceToBelly;
             return true;
         }

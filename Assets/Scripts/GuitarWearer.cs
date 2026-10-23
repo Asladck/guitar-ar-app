@@ -47,6 +47,12 @@ namespace GuitarAR
         /// </summary>
         protected abstract bool TryGetTorso(out Vector3 belly, out Vector3 right, out Vector3 up);
 
+        /// <summary>
+        /// Wear a mirror image of the guitar (neck to the person's right, flipped model) to match
+        /// a mirrored camera view, so on screen it still looks held right-handed.
+        /// </summary>
+        protected virtual bool Mirrored => false;
+
         protected virtual void OnDisable()
         {
             IsTracking = false;
@@ -97,7 +103,8 @@ namespace GuitarAR
             var forward = Vector3.Cross(right, up);
 
             float angle = m_NeckAngle * Mathf.Deg2Rad;
-            var neck = (-right * Mathf.Cos(angle) + up * Mathf.Sin(angle)).normalized;
+            float side = Mirrored ? 1f : -1f;
+            var neck = (right * (side * Mathf.Cos(angle)) + up * Mathf.Sin(angle)).normalized;
 
             // Guitar space: +Y is the face, +Z runs up the neck, the origin is the back of the lower bout.
             rotation = Quaternion.LookRotation(neck, forward);
@@ -115,7 +122,10 @@ namespace GuitarAR
 
             // Overshoot slightly on the way in so it "pops", and shrink smoothly on the way out.
             float scale = show ? EaseOutBack(m_Visibility) : Mathf.SmoothStep(0f, 1f, m_Visibility);
-            m_Guitar.transform.localScale = m_BaseScale * scale;
+            var baseScale = m_BaseScale;
+            if (Mirrored)
+                baseScale.x = -baseScale.x;
+            m_Guitar.transform.localScale = baseScale * scale;
 
             bool active = m_Visibility > 0f;
             if (m_Guitar.activeSelf != active)
