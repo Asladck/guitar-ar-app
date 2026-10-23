@@ -36,6 +36,7 @@ namespace GuitarAR
         GuitarMode m_Mode;
         GUIStyle m_ButtonStyle;
         GUIStyle m_HintStyle;
+        GUIStyle m_DiagnosticStyle;
 
         public GuitarMode Mode => m_Mode;
 
@@ -123,6 +124,16 @@ namespace GuitarAR
             if (selected != (int)m_Mode)
                 SetMode((GuitarMode)selected);
 
+            if (m_Mode == GuitarMode.Selfie && m_SelfieAttacher != null)
+            {
+                var diagnostic = m_SelfieAttacher.DiagnosticText();
+                if (!string.IsNullOrEmpty(diagnostic))
+                {
+                    var rect = new Rect(Screen.width * 0.03f, Screen.height * 0.2f, Screen.width * 0.94f, Screen.height * 0.6f);
+                    GUI.Label(rect, diagnostic, m_DiagnosticStyle);
+                }
+            }
+
             string hint = Hint();
             if (!string.IsNullOrEmpty(hint))
             {
@@ -165,6 +176,12 @@ namespace GuitarAR
                 alignment = TextAnchor.MiddleCenter,
                 wordWrap = true,
                 normal = { textColor = Color.white },
+            };
+            m_DiagnosticStyle = new GUIStyle(m_HintStyle)
+            {
+                fontSize = Mathf.RoundToInt(fontSize * 0.55f),
+                alignment = TextAnchor.UpperLeft,
+                normal = { textColor = Color.yellow },
             };
         }
     }

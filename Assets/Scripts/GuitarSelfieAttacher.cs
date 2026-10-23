@@ -44,7 +44,35 @@ namespace GuitarAR
             {
                 m_PreviousTrackingMode = m_Session.requestedTrackingMode;
                 m_Session.requestedTrackingMode = TrackingMode.DontCare;
+                if (m_Session.subsystem != null && !(m_Session.subsystem.configurationChooser is FrontCameraConfigurationChooser))
+                    m_Session.subsystem.configurationChooser = new FrontCameraConfigurationChooser();
             }
+        }
+
+        /// <summary>
+        /// What the session is actually running, for an on-screen hint while the front camera
+        /// hasn't come up. Null once it's on the front camera.
+        /// </summary>
+        public string DiagnosticText()
+        {
+            if (m_CameraManager == null || m_Session == null || m_Session.subsystem == null)
+                return null;
+            if (m_CameraManager.currentFacingDirection == CameraFacingDirection.User)
+                return null;
+
+            var subsystem = m_Session.subsystem;
+            var config = subsystem.currentConfiguration;
+            var text = $"camera: {m_CameraManager.currentFacingDirection}\nrequested: {subsystem.requestedFeatures.ToStringList()}\n" +
+                       $"running: {(config.HasValue ? config.Value.descriptor.capabilities.ToStringList() : "none")}";
+            using (var descriptors = subsystem.GetConfigurationDescriptors(Unity.Collections.Allocator.Temp))
+            {
+                if (descriptors.IsCreated)
+                {
+                    foreach (var d in descriptors)
+                        text += $"\n[{d.rank}] {d.capabilities.ToStringList()}";
+                }
+            }
+            return text;
         }
 
         protected override void OnDisable()
