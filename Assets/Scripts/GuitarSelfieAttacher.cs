@@ -101,7 +101,9 @@ namespace GuitarAR
             if (forward.sqrMagnitude < 1e-6f)
                 return false;
 
-            right = Vector3.Cross(up, forward);
+            // ARKit mirrors the front camera's world like a selfie, so the person's right comes
+            // out flipped compared to the back camera.
+            right = Vector3.Cross(forward, up);
             belly = face.transform.position - up * m_FaceToBelly;
             return true;
         }
