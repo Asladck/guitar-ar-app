@@ -15,15 +15,7 @@ namespace GuitarAR
         [SerializeField] Color m_FretboardColor = new Color(0.16f, 0.10f, 0.06f);
         [SerializeField] Color m_MetalColor = new Color(0.85f, 0.85f, 0.80f);
 
-        [Tooltip("URP Lit material used for every part. Primitives created in a player build " +
-                 "default to the Built-in Standard shader, which renders magenta under URP.")]
-        [SerializeField] Material m_BaseMaterial;
-
-        public Material BaseMaterial
-        {
-            get => m_BaseMaterial;
-            set => m_BaseMaterial = value;
-        }
+        static Material s_PartMaterial;
 
         const int k_StringCount = 6;
         const int k_FretCount = 12;
@@ -96,23 +88,6 @@ namespace GuitarAR
             box.size = new Vector3(0.40f, 0.12f, 1.05f);
         }
 
-        static Material s_FallbackMaterial;
-
-        static Material FallbackMaterial()
-        {
-            if (s_FallbackMaterial == null)
-            {
-                var shader = Shader.Find("Universal Render Pipeline/Lit");
-                if (shader == null)
-                {
-                    Debug.LogError("[ProceduralGuitar] No base material assigned and URP Lit shader not in the build.");
-                    return null;
-                }
-                s_FallbackMaterial = new Material(shader);
-            }
-            return s_FallbackMaterial;
-        }
-
         Transform Part(PrimitiveType type, string partName, Vector3 localPosition, Vector3 localScale, Color color)
         {
             var go = GameObject.CreatePrimitive(type);
@@ -127,10 +102,13 @@ namespace GuitarAR
                     DestroyImmediate(col);
             }
 
+            // The pipeline's default material isn't included in player builds (renders magenta),
+            // so use a URP Lit material from Resources, which always ships with the build.
             var r = go.GetComponent<Renderer>();
-            var baseMaterial = m_BaseMaterial != null ? m_BaseMaterial : FallbackMaterial();
-            if (baseMaterial != null)
-                r.sharedMaterial = baseMaterial;
+            if (s_PartMaterial == null)
+                s_PartMaterial = Resources.Load<Material>("GuitarPart");
+            if (s_PartMaterial != null)
+                r.sharedMaterial = s_PartMaterial;
             r.material.color = color;
 
             var t = go.transform;

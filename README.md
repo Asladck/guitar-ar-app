@@ -1,6 +1,7 @@
 # Guitar AR
 
-A mobile augmented-reality app (Android + iOS) that puts a guitar on a real surface around you.
+A mobile augmented-reality app (Android + iOS) that hangs a guitar on a person in front of the camera,
+or puts it on a real surface around you.
 Built with Unity 6 LTS, Universal Render Pipeline and AR Foundation (ARCore on Android, ARKit on iOS).
 
 ## What's here
@@ -11,6 +12,8 @@ Built with Unity 6 LTS, Universal Render Pipeline and AR Foundation (ARCore on A
 | `ProjectSettings/ProjectVersion.txt` | Editor version (Unity 6000.0 LTS) |
 | `Assets/Scripts/ProceduralGuitar.cs` | Builds a simple guitar from primitives (placeholder until a real model is imported) |
 | `Assets/Scripts/GuitarPlacer.cs` | Tap a detected plane to place the guitar; tap again to move it |
+| `Assets/Scripts/GuitarBodyAttacher.cs` | Hangs the guitar on the torso of a person found by ARKit body tracking |
+| `Assets/Scripts/GuitarModeSwitcher.cs` | On-screen button switching between *on a person* and *on a surface* |
 | `Assets/Editor/GuitarARProjectSetup.cs` | **Guitar AR → Set Up Project** menu: URP + AR background, player settings, AR scene |
 | `.claude/skills/` | Unity's agent skills (`npx skills add Unity-Technologies/skills`) |
 
@@ -40,7 +43,14 @@ files and `Library/` the first time it opens.
 - **iOS:** switch to iOS, **Build**, open the generated Xcode project on a Mac, set your signing
   team and run on an ARKit-capable iPhone.
 
-Move the phone slowly over a floor or table until the translucent plane appears, then tap it.
+The app starts in **on a person** mode: point the camera at someone so their whole body is in
+frame, and the guitar appears on their torso. Body tracking needs an iPhone with an A12 chip or
+newer; it isn't available on Android.
+
+Tap the button at the bottom to switch to **on a surface** mode: move the phone slowly over a
+floor or table until the translucent plane appears, then tap it.
+
+ARKit can't track bodies and detect planes in the same session, so only one mode runs at a time.
 
 ## Next steps
 
