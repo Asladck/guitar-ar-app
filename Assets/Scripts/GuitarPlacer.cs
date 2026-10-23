@@ -18,6 +18,9 @@ namespace GuitarAR
         [Tooltip("Optional. A guitar model to place. If empty, a ProceduralGuitar is built at runtime.")]
         [SerializeField] GameObject m_GuitarPrefab;
 
+        [Tooltip("URP Lit material for the procedural guitar. Without it the guitar renders magenta in builds.")]
+        [SerializeField] Material m_GuitarMaterial;
+
         static readonly List<ARRaycastHit> s_Hits = new List<ARRaycastHit>();
 
         ARRaycastManager m_RaycastManager;
@@ -52,9 +55,12 @@ namespace GuitarAR
             if (m_GuitarPrefab != null)
                 return Instantiate(m_GuitarPrefab, position, rotation);
 
+            // Inactive while adding so Awake (which builds the parts) runs after the material is set.
             var go = new GameObject("Guitar");
+            go.SetActive(false);
             go.transform.SetPositionAndRotation(position, rotation);
-            go.AddComponent<ProceduralGuitar>();
+            go.AddComponent<ProceduralGuitar>().BaseMaterial = m_GuitarMaterial;
+            go.SetActive(true);
             return go;
         }
 

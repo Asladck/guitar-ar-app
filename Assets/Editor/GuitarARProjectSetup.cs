@@ -25,6 +25,7 @@ namespace GuitarAR.Editor
         const string k_RendererPath = k_SettingsFolder + "/MobileAR_Renderer.asset";
         const string k_PipelinePath = k_SettingsFolder + "/MobileAR_URP.asset";
         const string k_PlaneMaterialPath = "Assets/Materials/ARPlane.mat";
+        const string k_GuitarMaterialPath = "Assets/Materials/Guitar.mat";
         const string k_PlanePrefabPath = "Assets/Prefabs/ARPlane.prefab";
 
         [MenuItem("Guitar AR/Set Up Project")]
@@ -149,7 +150,9 @@ namespace GuitarAR.Editor
             planeManager.planePrefab = CreatePlanePrefab();
             planeManager.requestedDetectionMode = PlaneDetectionMode.Horizontal;
             originGo.AddComponent<ARRaycastManager>();
-            originGo.AddComponent<GuitarPlacer>();
+            var placer = new SerializedObject(originGo.AddComponent<GuitarPlacer>());
+            placer.FindProperty("m_GuitarMaterial").objectReferenceValue = CreateGuitarMaterial();
+            placer.ApplyModifiedPropertiesWithoutUndo();
 
             EnsureFolder(Path.GetDirectoryName(k_ScenePath));
             EditorSceneManager.SaveScene(scene, k_ScenePath);
@@ -177,6 +180,23 @@ namespace GuitarAR.Editor
             var prefab = PrefabUtility.SaveAsPrefabAsset(go, k_PlanePrefabPath);
             Object.DestroyImmediate(go);
             return prefab;
+        }
+
+        static Material CreateGuitarMaterial()
+        {
+            var existing = AssetDatabase.LoadAssetAtPath<Material>(k_GuitarMaterialPath);
+            if (existing != null)
+                return existing;
+
+            var shader = Shader.Find("Universal Render Pipeline/Lit");
+            if (shader == null)
+                throw new System.InvalidOperationException("URP Lit shader not found. Is the URP package installed?");
+
+            var mat = new Material(shader) { name = "Guitar" };
+            mat.SetFloat("_Smoothness", 0.6f);
+            EnsureFolder(Path.GetDirectoryName(k_GuitarMaterialPath));
+            AssetDatabase.CreateAsset(mat, k_GuitarMaterialPath);
+            return mat;
         }
 
         static Material CreatePlaneMaterial()
