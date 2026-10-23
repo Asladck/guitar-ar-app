@@ -91,11 +91,11 @@ namespace GuitarAR.Editor
             PlayerSettings.productName = "Guitar AR";
             PlayerSettings.colorSpace = ColorSpace.Linear;
 
-            // Android (ARCore): IL2CPP + ARM64, API 24+, OpenGL ES 3.
+            // Android (ARCore): IL2CPP + ARM64, API 26+ (Unity 6 minimum), OpenGL ES 3.
             PlayerSettings.SetApplicationIdentifier(NamedBuildTarget.Android, "com.asladck.guitarar");
             PlayerSettings.SetScriptingBackend(NamedBuildTarget.Android, ScriptingImplementation.IL2CPP);
             PlayerSettings.Android.targetArchitectures = AndroidArchitecture.ARM64;
-            PlayerSettings.Android.minSdkVersion = (AndroidSdkVersions)24;
+            PlayerSettings.Android.minSdkVersion = (AndroidSdkVersions)26;
             PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.Android, false);
             PlayerSettings.SetGraphicsAPIs(BuildTarget.Android, new[] { GraphicsDeviceType.OpenGLES3 });
 
