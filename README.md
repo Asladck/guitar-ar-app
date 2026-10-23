@@ -42,6 +42,8 @@ files and `Library/` the first time it opens.
 
 - **Android:** File → Build Profiles → Android → Switch Platform, plug in a phone with
   developer mode on and ARCore support, then **Build And Run**.
+- **iOS from the command line:** close Unity, connect the iPhone and run
+  `Tools/build-ios.sh <device-udid> <apple-team-id>`. It exports the Xcode project, builds it and installs the app.
 - **iOS:** switch to iOS, **Build**, open the generated Xcode project on a Mac, set your signing
   team and run on an ARKit-capable iPhone.
 
