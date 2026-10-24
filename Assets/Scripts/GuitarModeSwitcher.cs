@@ -134,7 +134,7 @@ namespace GuitarAR
                 }
             }
 
-            string hint = Hint();
+            string hint = Hint() ?? GuitarStrummer.Hint;
             if (!string.IsNullOrEmpty(hint))
             {
                 var hintRect = new Rect(Screen.width * 0.05f, Screen.height * 0.08f, Screen.width * 0.9f, Screen.height * 0.1f);

@@ -15,6 +15,10 @@ Built with Unity 6 LTS, Universal Render Pipeline and AR Foundation (ARCore on A
 | `Assets/Scripts/GuitarWearer.cs` | Shared logic for wearing the guitar on a torso: pose, smoothing, pop-in animation |
 | `Assets/Scripts/GuitarBodyAttacher.cs` | Back camera: hangs the guitar on a person found by ARKit body tracking |
 | `Assets/Scripts/GuitarSelfieAttacher.cs` | Front camera: hangs the guitar on you, estimated from your face |
+| `Assets/Scripts/GuitarStrings.cs` | A guitar's playable strings: screen position, one voice per string, wobble when plucked |
+| `Assets/Scripts/GuitarStrummer.cs` | Swipe across the strings to strum, tap to pluck, chord buttons |
+| `Assets/Scripts/GuitarSynth.cs` | Synthesizes plucked-string notes (Karplus-Strong), so no audio files are needed |
+| `Assets/Plugins/iOS/GuitarAudioSession.mm` | Lets the guitar sound even when the iPhone is in silent mode |
 | `Assets/Scripts/GuitarModeSwitcher.cs` | On-screen buttons switching between *on a person*, *selfie* and *on a surface* |
 | `Assets/Editor/GuitarARProjectSetup.cs` | **Guitar AR → Set Up Project** menu: URP + AR background, player settings, AR scene |
 | `.claude/skills/` | Unity's agent skills (`npx skills add Unity-Technologies/skills`) |
@@ -60,8 +64,16 @@ floor or table until the translucent plane appears, then tap it.
 
 ARKit can't track bodies, track faces and detect planes in the same session, so only one mode runs at a time.
 
+**Playing:** once the guitar is on screen, swipe across its strings to strum, or tap a string to
+pluck it. Pick a chord (Em, Am, C, G, D, E) with the buttons above the mode buttons. When the
+guitar is far away and its strings are too close together to aim at, a tap strums all six. The
+notes are synthesized when the app starts, so there are no sound files. A guitar model you import
+is playable if its strings are children named `String1` (low E) to `String6` and it has a
+`GuitarStrings` component.
+
 ## Next steps
 
 - Replace the procedural guitar with a real 3D model (assign it to *Guitar Prefab* on
   `XR Origin → GuitarPlacer`).
-- Pinch to scale / twist to rotate, and tap strings to play notes.
+- Pinch to scale / twist to rotate.
+- Fret notes with a finger on the neck instead of chord buttons.

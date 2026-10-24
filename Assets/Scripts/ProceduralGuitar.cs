@@ -86,6 +86,9 @@ namespace GuitarAR
                 box = gameObject.AddComponent<BoxCollider>();
             box.center = new Vector3(0f, 0.06f, 0.36f);
             box.size = new Vector3(0.40f, 0.12f, 1.05f);
+
+            if (gameObject.GetComponent<GuitarStrings>() == null)
+                gameObject.AddComponent<GuitarStrings>();
         }
 
         Transform Part(PrimitiveType type, string partName, Vector3 localPosition, Vector3 localScale, Color color)
