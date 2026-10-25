@@ -6,14 +6,24 @@ namespace GuitarAR
 {
     /// <summary>
     /// Hangs the guitar on the person looking into the front camera. ARKit can't track bodies
-    /// with the front camera, so the torso is estimated from the face: the belly is assumed to be
-    /// straight down from the head, and the person is assumed to face the phone.
+    /// with the front camera, and a phone held at arm's length sees little more than the face,
+    /// so the guitar isn't put at the real belly (it would be off the bottom of the screen and
+    /// huge). Instead it sits in the lower middle of the picture, at the face's distance, sized to
+    /// fit the screen, and the person is assumed to face the phone.
     /// </summary>
     [RequireComponent(typeof(ARFaceManager))]
     public class GuitarSelfieAttacher : GuitarWearer
     {
-        [Tooltip("Distance from the middle of the face down to the belly, in meters.")]
-        [SerializeField] float m_FaceToBelly = 0.50f;
+        // Where the body of the guitar goes in the picture (0..1 from the bottom left), above the buttons.
+        static readonly Vector2 k_BellyOnScreen = new Vector2(0.5f, 0.4f);
+
+        // Full-size guitar length, bottom of the body to the tip of the headstock, in meters.
+        const float k_GuitarLength = 1.05f;
+
+        [Tooltip("How much of the screen width the guitar spans.")]
+        [SerializeField] float m_ScreenWidthFraction = 0.75f;
+
+        float m_FitScale = 1f;
 
         ARFaceManager m_FaceManager;
         ARCameraManager m_CameraManager;
@@ -25,6 +35,8 @@ namespace GuitarAR
         // The front camera image is shown mirrored like a selfie, so the guitar has to be a mirror
         // image too. A plain rotation can't do that: it either holds it left-handed or shows its back.
         protected override bool Mirrored => true;
+
+        protected override float SizeScale => m_FitScale;
 
         void Awake()
         {
@@ -106,7 +118,16 @@ namespace GuitarAR
                 return false;
 
             right = Vector3.Cross(up, forward);
-            belly = face.transform.position - up * m_FaceToBelly;
+
+            var camTransform = cam.transform;
+            float depth = Mathf.Max(0.2f, Vector3.Dot(face.transform.position - camTransform.position, camTransform.forward));
+            belly = cam.ViewportToWorldPoint(new Vector3(k_BellyOnScreen.x, k_BellyOnScreen.y, depth));
+
+            // Shrink the guitar so its width on screen is a set share of what the camera sees there.
+            float halfWidth = Mathf.Atan(Mathf.Tan(cam.fieldOfView * 0.5f * Mathf.Deg2Rad) * cam.aspect);
+            float visibleWidth = 2f * depth * Mathf.Tan(halfWidth);
+            float guitarWidth = k_GuitarLength * BaseSize * Mathf.Cos(NeckAngle * Mathf.Deg2Rad);
+            m_FitScale = Mathf.Clamp(m_ScreenWidthFraction * visibleWidth / guitarWidth, 0.1f, 1f);
             return true;
         }
 

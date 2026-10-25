@@ -216,7 +216,10 @@ namespace GuitarAR
                 m_LastPositions[id] = position;
                 // Touches that start on a button belong to the button.
                 if (IsOverButton(position) || GuitarModeSwitcher.IsOverButton(position))
+                {
                     m_IgnoredTouches.Add(id);
+                    s_LastTapInfo = "на кнопках";
+                }
                 else
                     m_IgnoredTouches.Remove(id);
 
@@ -332,7 +335,10 @@ namespace GuitarAR
             for (int i = 0; i < GuitarStrings.StringCount; i++)
             {
                 if (!guitar.TryGetScreenSegment(i, cam, out var bridge, out var nut))
+                {
+                    s_LastTapInfo = $"струна {i + 1} за камерой";
                     return false;
+                }
 
                 // Measure spacing near the bridge end, where the strings are strummed.
                 var middle = Vector2.Lerp(bridge, nut, 0.2f);
