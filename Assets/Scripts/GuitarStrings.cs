@@ -111,9 +111,22 @@ namespace GuitarAR
             return true;
         }
 
+        /// <summary>Gets a string's note ready now, so playing it later doesn't hitch.</summary>
+        public static void Prepare(int stringIndex, int midiNote)
+        {
+            if (GuitarSamples.Count > 0)
+            {
+                GuitarSamples.Prepare(stringIndex, midiNote - GuitarSynth.OpenStrings[stringIndex]);
+                return;
+            }
+            GuitarSynth.Prepare(midiNote);
+            GuitarSynth.Prepare(midiNote, true);
+        }
+
         /// <summary>
         /// Plays a string as the given MIDI note, at a volume from 0 to 1, after a short delay in
         /// seconds (so a strum rolls across the strings instead of hitting them all at once).
+        /// The note is the string's recording when there is one, synthesized otherwise.
         /// A string that's plucked again stops ringing when the new note starts, like a real one.
         /// </summary>
         public void Pluck(int stringIndex, int midiNote, float volume, float delay = 0f, bool muted = false)
@@ -126,7 +139,17 @@ namespace GuitarAR
 
             double start = AudioSettings.dspTime + Mathf.Max(0f, delay);
             voice.Stop();
-            voice.clip = GuitarSynth.Note(midiNote, muted);
+            int fret = midiNote - GuitarSynth.OpenStrings[stringIndex];
+            if (GuitarSamples.TryGet(stringIndex, fret, volume, muted, out var clip, out float pitch))
+            {
+                voice.clip = clip;
+                voice.pitch = pitch;
+            }
+            else
+            {
+                voice.clip = GuitarSynth.Note(midiNote, muted);
+                voice.pitch = 1f;
+            }
             voice.volume = volume * k_MixGain;
             if (delay > 0f)
                 voice.PlayScheduled(start);

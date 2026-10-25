@@ -4,9 +4,9 @@ using UnityEngine;
 namespace GuitarAR
 {
     /// <summary>
-    /// Synthesizes plucked-string notes with the Karplus-Strong algorithm, so the app needs no
-    /// audio files: a burst of noise circulates through a delay line one period long, and a
-    /// gentle low-pass in the loop makes it ring and fade like a steel string.
+    /// Synthesizes plucked-string notes with the Karplus-Strong algorithm, for notes that have no
+    /// recording (<see cref="GuitarSamples"/>): a burst of noise circulates through a delay line
+    /// one period long, and a gentle low-pass in the loop makes it ring and fade like a string.
     /// Clips are made once per note and cached.
     /// </summary>
     public static class GuitarSynth

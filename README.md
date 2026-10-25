@@ -17,7 +17,9 @@ Built with Unity 6 LTS, Universal Render Pipeline and AR Foundation (ARCore on A
 | `Assets/Scripts/GuitarSelfieAttacher.cs` | Front camera: hangs the guitar on you, estimated from your face |
 | `Assets/Scripts/GuitarStrings.cs` | A guitar's playable strings: screen position, one voice per string, wobble when plucked |
 | `Assets/Scripts/GuitarStrummer.cs` | Swipe across the strings to strum, tap to pluck, chord buttons |
-| `Assets/Scripts/GuitarSynth.cs` | Synthesizes plucked-string notes (Karplus-Strong), so no audio files are needed |
+| `Assets/Scripts/GuitarSamples.cs` | Plays recordings of a real guitar, one per string and fret, from `Assets/Resources/GuitarSamples` |
+| `Assets/Scripts/GuitarSynth.cs` | Synthesizes plucked-string notes (Karplus-Strong) for notes without a recording |
+| `Tools/make-guitar-samples.py` | Downloads the guitar recordings and cuts them into the notes in `Assets/Resources/GuitarSamples` |
 | `Assets/Plugins/iOS/GuitarAudioSession.mm` | Lets the guitar sound even when the iPhone is in silent mode |
 | `Assets/Scripts/GuitarModeSwitcher.cs` | On-screen buttons switching between *on a person*, *selfie* and *on a surface* |
 | `Assets/Editor/GuitarARProjectSetup.cs` | **Guitar AR → Set Up Project** menu: URP + AR background, player settings, AR scene |
@@ -76,9 +78,17 @@ string on the way doesn't make stray notes.
 **Playing:** once the guitar is on screen, swipe across its strings to strum, or tap a string to
 pluck it. Pick a chord (Em, Am, C, G, D, E) with the buttons above the mode buttons. When the
 guitar is far away and its strings are too close together to aim at, a tap strums all six. The
-notes are synthesized when the app starts, so there are no sound files. A guitar model you import
+notes are recordings of a real classical guitar, one for each string and fret, played gently and
+hard; `python3 Tools/make-guitar-samples.py` makes them again. A guitar model you import
 is playable if its strings are children named `String1` (low E) to `String6` and it has a
 `GuitarStrings` component.
+
+## Credits
+
+Guitar recordings: the Musical Instrument Samples of the University of Iowa Electronic Music
+Studios (Raimundo 118 classical guitar, played by Brian Penkrot),
+<https://theremin.music.uiowa.edu/MISguitar.html>, which "may be downloaded and used for any
+projects, without restrictions".
 
 ## Next steps
 

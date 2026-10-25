@@ -157,6 +157,7 @@ namespace GuitarAR
         {
             // Clips made for the old output may be gone or at the wrong sample rate.
             GuitarSynth.ClearCache();
+            GuitarSamples.ClearCache();
             PrepareChord(m_Chord);
             Debug.Log($"[GuitarAR] Audio configuration changed (device changed: {deviceWasChanged})");
         }
@@ -380,10 +381,7 @@ namespace GuitarAR
             for (int i = 0; i < frets.Length; i++)
             {
                 if (frets[i] >= 0)
-                {
-                    GuitarSynth.Prepare(GuitarSynth.OpenStrings[i] + frets[i]);
-                    GuitarSynth.Prepare(GuitarSynth.OpenStrings[i] + frets[i], true);
-                }
+                    GuitarStrings.Prepare(i, GuitarSynth.OpenStrings[i] + frets[i]);
             }
         }
 
@@ -510,7 +508,7 @@ namespace GuitarAR
                 onScreen = $"{a:0} -> {b:0}";
 
             string text = $"камера: {(m_HasCamera ? "да" : "НЕТ")} | гитар: {GuitarStrings.Active.Count}, играбельных: {playable}\n"
-                + $"касаний: {m_TouchCount}, щипков: {m_PluckCount}, звук: {AudioSettings.GetConfiguration().sampleRate} Гц, dsp {AudioSettings.dspTime:0.0}, звучит {GuitarStrings.PlayingVoices}\n"
+                + $"касаний: {m_TouchCount}, щипков: {m_PluckCount}, звук: {(GuitarSamples.Count > 0 ? $"записи {GuitarSamples.Count}" : "синтез")}, {AudioSettings.GetConfiguration().sampleRate} Гц, dsp {AudioSettings.dspTime:0.0}, звучит {GuitarStrings.PlayingVoices}\n"
                 + AudioSessionInfo() + "\n"
                 + $"струна 1 на экране: {onScreen}\nпоследнее касание: {s_LastTapInfo}"
                 + "\n" + GuitarHandPlayer.DiagnosticText
