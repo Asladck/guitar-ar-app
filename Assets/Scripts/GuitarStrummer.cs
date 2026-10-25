@@ -219,7 +219,7 @@ namespace GuitarAR
             {
                 m_LastPositions[id] = position;
                 // Touches that start on a button belong to the button.
-                if (IsOverButton(position) || GuitarModeSwitcher.IsOverButton(position))
+                if (IsOverButton(position) || GuitarModeSwitcher.IsOverButton(position) || GuitarHandPlayer.IsOverButton(position))
                 {
                     m_IgnoredTouches.Add(id);
                     s_LastTapInfo = "на кнопках";

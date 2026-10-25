@@ -36,7 +36,7 @@ namespace GuitarAR
                 return;
 
             // Taps on the strings or chord buttons play the guitar instead of moving it.
-            if (GuitarStrummer.IsOverButton(screenPosition) || (m_Guitar != null && GuitarStrummer.IsOnStrings(screenPosition)))
+            if (GuitarStrummer.IsOverButton(screenPosition) || GuitarHandPlayer.IsOverButton(screenPosition) || (m_Guitar != null && GuitarStrummer.IsOnStrings(screenPosition)))
                 return;
 
             if (!m_RaycastManager.Raycast(screenPosition, s_Hits, TrackableType.PlaneWithinPolygon))

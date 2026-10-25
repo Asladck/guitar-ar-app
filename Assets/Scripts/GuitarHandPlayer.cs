@@ -29,7 +29,13 @@ namespace GuitarAR
         const float k_BridgeOvershoot = 0.3f;   // Strings count as this much longer past the bridge, where people strum.
         const float k_PluckDeadband = 0.004f;   // Fraction of screen height; smaller moves are tracking jitter.
 
+        const float k_AssistStrumSpeed = 0.6f;  // With strum help on, passes at least this fast are strums, slower ones plucks.
+        const float k_AssistMargin = 1.5f;      // With strum help on, the strum zone reaches this many string gaps past the outer strings.
+        const string k_AssistKey = "GuitarAR.StrumAssist";
+
         static string s_Diagnostic = "рука: -";
+        static Rect s_AssistRect;
+        static bool s_Assist = true;
 
         readonly float[] m_Points = new float[k_MaxHands * k_JointCount * 3];
         readonly int[] m_Chirality = new int[k_MaxHands];
@@ -37,6 +43,7 @@ namespace GuitarAR
         ARSession m_Session;
         ARCameraManager m_CameraManager;
         Texture2D m_Dot;
+        GUIStyle m_ButtonStyle;
 
         // The right hand's index fingertip, in screen pixels.
         bool m_HasTip;
@@ -48,6 +55,25 @@ namespace GuitarAR
 
         /// <summary>A line for the on-screen diagnostics.</summary>
         public static string DiagnosticText => s_Diagnostic;
+
+        /// <summary>True if a screen position (pixels, origin bottom-left) is on the strum help button.</summary>
+        public static bool IsOverButton(Vector2 screenPosition)
+        {
+            var guiPoint = new Vector2(screenPosition.x, Screen.height - screenPosition.y);
+            return s_AssistRect.Contains(guiPoint);
+        }
+
+        void Awake()
+        {
+            try
+            {
+                s_Assist = PlayerPrefs.GetInt(k_AssistKey, 1) != 0;
+            }
+            catch (System.Exception)
+            {
+                s_Assist = true;
+            }
+        }
 
         void Update()
         {
@@ -133,51 +159,142 @@ namespace GuitarAR
             {
                 if (!guitar.IsPlayable)
                     continue;
+                if (s_Assist ? AssistedMove(guitar, cam, from, to, speed, distance, volume) : FreeMove(guitar, cam, from, to, speed, distance, volume))
+                    return;
+            }
+        }
 
-                int crossed = 0;
-                int firstString = -1;
-                float firstAlong = float.MaxValue;
-                Vector2 low = default, high = default;
-                for (int i = 0; i < GuitarStrings.StringCount; i++)
+        /// <summary>
+        /// Strum help: a quick pass anywhere through a wide zone around the strings strums the whole
+        /// chord, so grazing a string on the way doesn't make stray notes; only slow passes pluck.
+        /// </summary>
+        bool AssistedMove(GuitarStrings guitar, Camera cam, Vector2 from, Vector2 to, float speed, float distance, float volume)
+        {
+            if (!TryGetStrings(guitar, cam, s_Bridges, s_Nuts))
+                return false;
+
+            var low = Vector2.Lerp(s_Bridges[0], s_Nuts[0], 0.2f);
+            var high = Vector2.Lerp(s_Bridges[GuitarStrings.StringCount - 1], s_Nuts[GuitarStrings.StringCount - 1], 0.2f);
+            var gap = (high - low) / (GuitarStrings.StringCount - 1);
+
+            if (speed >= k_AssistStrumSpeed)
+            {
+                // The strum zone: the strings plus imaginary ones past the outer strings.
+                int lines = GuitarStrings.StringCount + 2;
+                for (int line = 0; line < lines; line++)
                 {
-                    if (!guitar.TryGetScreenSegment(i, cam, out var bridge, out var nut))
-                        continue;
-                    var middle = Vector2.Lerp(bridge, nut, 0.2f);
-                    if (i == 0)
-                        low = middle;
-                    high = middle;
-
-                    var pastBridge = bridge + (bridge - nut) * k_BridgeOvershoot;
-                    if (GuitarStrummer.Intersect(from, to, pastBridge, nut, out float along))
+                    Vector2 bridge, nut;
+                    if (line == 0)
                     {
-                        crossed++;
-                        if (along < firstAlong)
-                        {
-                            firstAlong = along;
-                            firstString = i;
-                        }
+                        bridge = s_Bridges[0] - gap * k_AssistMargin;
+                        nut = s_Nuts[0] - gap * k_AssistMargin;
+                    }
+                    else if (line == lines - 1)
+                    {
+                        bridge = s_Bridges[GuitarStrings.StringCount - 1] + gap * k_AssistMargin;
+                        nut = s_Nuts[GuitarStrings.StringCount - 1] + gap * k_AssistMargin;
+                    }
+                    else
+                    {
+                        bridge = s_Bridges[line - 1];
+                        nut = s_Nuts[line - 1];
+                    }
+
+                    if (GuitarStrummer.Intersect(from, to, bridge + (bridge - nut) * k_BridgeOvershoot, nut, out _))
+                    {
+                        StrumOnce(guitar, AcrossStrings(from, to, gap), volume);
+                        return true;
                     }
                 }
-                if (crossed == 0)
-                    continue;
-
-                if (speed >= k_StrumSpeed || crossed >= 3)
-                {
-                    // Moving from the low E side towards the high E is a down strum.
-                    bool down = Vector2.Dot(to - from, high - low) > 0f;
-                    float cooldown = down == m_LastStrumDown ? k_SameStrumCooldown : k_OtherStrumCooldown;
-                    if (Time.time - m_LastStrumTime < cooldown)
-                        return;
-                    m_LastStrumTime = Time.time;
-                    m_LastStrumDown = down;
-                    GuitarStrummer.Strum(guitar, down, volume);
-                }
-                else if (distance >= k_PluckDeadband)
-                {
-                    GuitarStrummer.PluckString(guitar, firstString, volume);
-                }
-                return;
+                return false;
             }
+
+            if (distance < k_PluckDeadband)
+                return false;
+            int nearest = FirstCrossed(from, to);
+            if (nearest < 0)
+                return false;
+            GuitarStrummer.PluckString(guitar, nearest, volume);
+            return true;
+        }
+
+        /// <summary>Without strum help: strings crossed fast (or several at once) strum, one crossed slowly plucks.</summary>
+        bool FreeMove(GuitarStrings guitar, Camera cam, Vector2 from, Vector2 to, float speed, float distance, float volume)
+        {
+            if (!TryGetStrings(guitar, cam, s_Bridges, s_Nuts))
+                return false;
+
+            int crossed = 0;
+            for (int i = 0; i < GuitarStrings.StringCount; i++)
+            {
+                if (GuitarStrummer.Intersect(from, to, s_Bridges[i] + (s_Bridges[i] - s_Nuts[i]) * k_BridgeOvershoot, s_Nuts[i], out _))
+                    crossed++;
+            }
+            if (crossed == 0)
+                return false;
+
+            if (speed >= k_StrumSpeed || crossed >= 3)
+            {
+                var low = Vector2.Lerp(s_Bridges[0], s_Nuts[0], 0.2f);
+                var high = Vector2.Lerp(s_Bridges[GuitarStrings.StringCount - 1], s_Nuts[GuitarStrings.StringCount - 1], 0.2f);
+                StrumOnce(guitar, AcrossStrings(from, to, high - low), volume);
+            }
+            else if (distance >= k_PluckDeadband)
+            {
+                GuitarStrummer.PluckString(guitar, FirstCrossed(from, to), volume);
+            }
+            return true;
+        }
+
+        static readonly Vector2[] s_Bridges = new Vector2[GuitarStrings.StringCount];
+        static readonly Vector2[] s_Nuts = new Vector2[GuitarStrings.StringCount];
+
+        static bool TryGetStrings(GuitarStrings guitar, Camera cam, Vector2[] bridges, Vector2[] nuts)
+        {
+            for (int i = 0; i < GuitarStrings.StringCount; i++)
+            {
+                if (!guitar.TryGetScreenSegment(i, cam, out bridges[i], out nuts[i]))
+                    return false;
+            }
+            return true;
+        }
+
+        /// <summary>The first string (in s_Bridges/s_Nuts) the movement crosses, or -1.</summary>
+        static int FirstCrossed(Vector2 from, Vector2 to)
+        {
+            int first = -1;
+            float firstAlong = float.MaxValue;
+            for (int i = 0; i < GuitarStrings.StringCount; i++)
+            {
+                var bridge = s_Bridges[i] + (s_Bridges[i] - s_Nuts[i]) * k_BridgeOvershoot;
+                if (GuitarStrummer.Intersect(from, to, bridge, s_Nuts[i], out float along) && along < firstAlong)
+                {
+                    firstAlong = along;
+                    first = i;
+                }
+            }
+            return first;
+        }
+
+        /// <summary>
+        /// True for a down strum: movement from the low E side towards the high E, counting only the
+        /// part of the movement across the strings, not along them.
+        /// </summary>
+        static bool AcrossStrings(Vector2 from, Vector2 to, Vector2 lowToHigh)
+        {
+            var along = s_Nuts[0] - s_Bridges[0];
+            var across = along.sqrMagnitude > 1e-6f ? lowToHigh - along * (Vector2.Dot(lowToHigh, along) / along.sqrMagnitude) : lowToHigh;
+            return Vector2.Dot(to - from, across) > 0f;
+        }
+
+        void StrumOnce(GuitarStrings guitar, bool down, float volume)
+        {
+            float cooldown = down == m_LastStrumDown ? k_SameStrumCooldown : k_OtherStrumCooldown;
+            if (Time.time - m_LastStrumTime < cooldown)
+                return;
+            m_LastStrumTime = Time.time;
+            m_LastStrumDown = down;
+            GuitarStrummer.Strum(guitar, down, volume);
         }
 
         bool TryRead(int hand, out Vector2 indexTip, out float ratio, out bool ratioKnown)
@@ -236,6 +353,27 @@ namespace GuitarAR
                 GUI.DrawTexture(new Rect(m_Tip.x - size * 0.5f, Screen.height - m_Tip.y - size * 0.5f, size, size), m_Dot);
             }
             GUI.color = color;
+
+            if (!AnyPlayable())
+            {
+                s_AssistRect = default;
+                return;
+            }
+            if (m_ButtonStyle == null)
+                m_ButtonStyle = new GUIStyle(GUI.skin.button) { fontSize = Mathf.RoundToInt(Screen.height * 0.016f), fontStyle = FontStyle.Bold };
+            s_AssistRect = new Rect(Screen.width * 0.05f, Screen.height * 0.345f, Screen.width * 0.5f, Screen.height * 0.045f);
+            bool assist = GUI.Toggle(s_AssistRect, s_Assist, s_Assist ? "Помощь с боем: вкл" : "Помощь с боем: выкл", m_ButtonStyle);
+            if (assist != s_Assist)
+            {
+                s_Assist = assist;
+                try
+                {
+                    PlayerPrefs.SetInt(k_AssistKey, assist ? 1 : 0);
+                }
+                catch (System.Exception)
+                {
+                }
+            }
         }
 
         static int InterfaceOrientation()

@@ -65,6 +65,12 @@ floor or table until the translucent plane appears, then tap it.
 
 ARKit can't track bodies, track faces and detect planes in the same session, so only one mode runs at a time.
 
+**Playing with your hand:** raise your right index finger and move it across the strings in
+front of the camera. A quick sweep strums (down from the low E, or a lighter up strum), a slow pass
+plucks one string; with the finger down nothing plays. **Strum help** (on by default, button on
+screen) makes any quick pass through a wide zone around the strings a full strum, so grazing a
+string on the way doesn't make stray notes.
+
 **Playing:** once the guitar is on screen, swipe across its strings to strum, or tap a string to
 pluck it. Pick a chord (Em, Am, C, G, D, E) with the buttons above the mode buttons. When the
 guitar is far away and its strings are too close together to aim at, a tap strums all six. The
