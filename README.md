@@ -48,6 +48,7 @@ files and `Library/` the first time it opens.
   developer mode on and ARCore support, then **Build And Run**.
 - **iOS from the command line:** close Unity, connect the iPhone and run
   `Tools/build-ios.sh <device-udid> <apple-team-id>`. It exports the Xcode project, builds it and installs the app.
+  `Tools/run-ios.sh` starts the installed app on the connected iPhone and shows its log in the terminal.
 - **iOS:** switch to iOS, **Build**, open the generated Xcode project on a Mac, set your signing
   team and run on an ARKit-capable iPhone.
 
