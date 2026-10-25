@@ -3,6 +3,7 @@
 # (lines from the app start with [GuitarAR]). Ctrl+C stops the log and the app.
 # Usage: Tools/run-ios.sh [device-udid]   (defaults to the first connected iPhone)
 set -euo pipefail
+export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 
 BUNDLE_ID="com.asladck.guitarar"
 DEVICE="${1:-}"
