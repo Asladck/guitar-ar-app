@@ -71,7 +71,7 @@ namespace GuitarAR
         GUIStyle m_ButtonStyle;
 
         /// <summary>A hint for the player, or null once they've played.</summary>
-        public static string Hint => s_Instance != null && !s_Instance.m_HasPlayed && AnyPlayable() ? "Проведи пальцем по струнам" : null;
+        public static string Hint => s_Instance != null && !s_Instance.m_HasPlayed && AnyPlayable() ? "Подними указательный палец и проведи рукой по струнам" : null;
 
         /// <summary>True if a screen position (pixels, origin bottom-left) is on the chord buttons.</summary>
         public static bool IsOverButton(Vector2 screenPosition)
@@ -98,7 +98,11 @@ namespace GuitarAR
         static void EnsureInScene()
         {
             if (Object.FindAnyObjectByType<GuitarStrummer>() == null)
-                new GameObject("Guitar Strummer").AddComponent<GuitarStrummer>();
+            {
+                var go = new GameObject("Guitar Strummer");
+                go.AddComponent<GuitarStrummer>();
+                go.AddComponent<GuitarHandPlayer>();
+            }
         }
 
         void Awake()
@@ -284,6 +288,33 @@ namespace GuitarAR
                 Play(crossing.guitar, crossing.stringIndex, volume, crossing.along * roll);
         }
 
+        /// <summary>
+        /// Strums the chosen chord: a down strum rolls from the low E up, an up strum (lighter)
+        /// rolls back over the top four strings.
+        /// </summary>
+        public static void Strum(GuitarStrings guitar, bool down, float volume)
+        {
+            if (s_Instance == null)
+                return;
+            if (down)
+            {
+                for (int i = 0; i < GuitarStrings.StringCount; i++)
+                    s_Instance.Play(guitar, i, volume, i * k_StrumRoll);
+            }
+            else
+            {
+                for (int i = GuitarStrings.StringCount - 1, n = 0; i >= 2; i--, n++)
+                    s_Instance.Play(guitar, i, volume * 0.8f, n * k_StrumRoll * 0.8f);
+            }
+        }
+
+        /// <summary>Plucks one string of the chosen chord.</summary>
+        public static void PluckString(GuitarStrings guitar, int stringIndex, float volume)
+        {
+            if (s_Instance != null)
+                s_Instance.Play(guitar, stringIndex, volume, 0f);
+        }
+
         void Play(GuitarStrings guitar, int stringIndex, float volume, float delay)
         {
             int fret = k_Chords[m_Chord].Frets[stringIndex];
@@ -368,7 +399,7 @@ namespace GuitarAR
         }
 
         /// <summary>Whether segment p1-p2 crosses q1-q2, and how far along p1-p2 (0..1).</summary>
-        static bool Intersect(Vector2 p1, Vector2 p2, Vector2 q1, Vector2 q2, out float along)
+        internal static bool Intersect(Vector2 p1, Vector2 p2, Vector2 q1, Vector2 q2, out float along)
         {
             along = 0f;
             var r = p2 - p1;
@@ -437,8 +468,9 @@ namespace GuitarAR
             string text = $"камера: {(m_HasCamera ? "да" : "НЕТ")} | гитар: {GuitarStrings.Active.Count}, играбельных: {playable}\n"
                 + $"касаний: {m_TouchCount}, щипков: {m_PluckCount}, звук: {AudioSettings.GetConfiguration().sampleRate} Гц\n"
                 + $"струна 1 на экране: {onScreen}\nпоследнее касание: {s_LastTapInfo}"
+                + "\n" + GuitarHandPlayer.DiagnosticText
                 + (m_LastError != null ? "\nошибка: " + m_LastError : "");
-            GUI.Label(new Rect(Screen.width * 0.03f, Screen.height * 0.19f, Screen.width * 0.94f, Screen.height * 0.12f), text, m_DiagnosticStyle);
+            GUI.Label(new Rect(Screen.width * 0.03f, Screen.height * 0.19f, Screen.width * 0.94f, Screen.height * 0.15f), text, m_DiagnosticStyle);
         }
 
 #if UNITY_IOS && !UNITY_EDITOR
