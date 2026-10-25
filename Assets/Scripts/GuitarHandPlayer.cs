@@ -34,6 +34,7 @@ namespace GuitarAR
         readonly int[] m_Chirality = new int[k_MaxHands];
         double m_LastTimestamp;
         ARSession m_Session;
+        ARCameraManager m_CameraManager;
         Texture2D m_Dot;
 
         // The right hand's index fingertip, in screen pixels.
@@ -74,12 +75,18 @@ namespace GuitarAR
 
         void OnHands(int count, double timestamp)
         {
+            // Vision reads the front camera's image the other way round, so its right is your left.
+            if (m_CameraManager == null && Camera.main != null)
+                m_CameraManager = Camera.main.GetComponent<ARCameraManager>();
+            bool frontCamera = m_CameraManager != null && m_CameraManager.currentFacingDirection == CameraFacingDirection.User;
+            int rightHand = frontCamera ? -k_RightHand : k_RightHand;
+
             int right = -1, left = 0;
             for (int h = 0; h < count; h++)
             {
-                if (m_Chirality[h] == k_RightHand && right < 0)
+                if (m_Chirality[h] == rightHand && right < 0)
                     right = h;
-                else if (m_Chirality[h] == -k_RightHand)
+                else if (m_Chirality[h] == -rightHand)
                     left++;
             }
 
