@@ -22,6 +22,7 @@ namespace GuitarAR
         const float k_HighDecaySeconds = 2.2f; // ...and of notes two octaves up.
         const float k_PickPosition = 0.18f;    // Where along the string it's plucked (0 = bridge).
         const float k_Peak = 0.6f;
+        const int k_Variants = 2;
 
         static readonly Dictionary<int, AudioClip> s_Clips = new Dictionary<int, AudioClip>();
 
@@ -32,17 +33,30 @@ namespace GuitarAR
 
         /// <summary>
         /// A plucked note. Muted, it's the short percussive "chuck" of a string damped by the palm
-        /// right as it's hit.
+        /// right as it's hit. Each note comes in a few slightly different takes, picked at random,
+        /// so repeated strums don't sound like the same recording played again.
         /// </summary>
         public static AudioClip Note(int midiNote, bool muted = false)
         {
-            int key = muted ? -midiNote : midiNote;
+            return Variant(midiNote, muted, Random.Range(0, k_Variants));
+        }
+
+        /// <summary>Makes all takes of a note now, so playing it later doesn't hitch.</summary>
+        public static void Prepare(int midiNote, bool muted = false)
+        {
+            for (int v = 0; v < k_Variants; v++)
+                Variant(midiNote, muted, v);
+        }
+
+        static AudioClip Variant(int midiNote, bool muted, int variant)
+        {
+            int key = (midiNote * k_Variants + variant + 1) * (muted ? -1 : 1);
             if (s_Clips.TryGetValue(key, out var clip) && clip != null)
                 return clip;
 
             int sampleRate = AudioSettings.outputSampleRate > 0 ? AudioSettings.outputSampleRate : 48000;
-            var samples = Pluck(Frequency(midiNote), sampleRate, midiNote, muted);
-            clip = AudioClip.Create(muted ? $"Muted{midiNote}" : $"Note{midiNote}", samples.Length, 1, sampleRate, false);
+            var samples = Pluck(Frequency(midiNote), sampleRate, midiNote * 7 + variant, muted);
+            clip = AudioClip.Create($"{(muted ? "Muted" : "Note")}{midiNote}.{variant}", samples.Length, 1, sampleRate, false);
             clip.SetData(samples, 0);
             s_Clips[key] = clip;
             return clip;

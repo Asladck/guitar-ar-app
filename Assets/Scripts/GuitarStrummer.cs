@@ -132,6 +132,7 @@ namespace GuitarAR
         void Start()
         {
             PlayEvenWhenSilent();
+            GuitarSoftLimiter.EnsureOnListener();
             // Make the first chord's notes now so the first strum doesn't hitch.
             PrepareChord(m_Chord);
             var config = AudioSettings.GetConfiguration();
@@ -150,6 +151,7 @@ namespace GuitarAR
         {
             if (hasFocus)
                 PlayEvenWhenSilent();
+            GuitarSoftLimiter.EnsureOnListener();
         }
 
         void Update()
@@ -365,8 +367,8 @@ namespace GuitarAR
             {
                 if (frets[i] >= 0)
                 {
-                    GuitarSynth.Note(GuitarSynth.OpenStrings[i] + frets[i]);
-                    GuitarSynth.Note(GuitarSynth.OpenStrings[i] + frets[i], true);
+                    GuitarSynth.Prepare(GuitarSynth.OpenStrings[i] + frets[i]);
+                    GuitarSynth.Prepare(GuitarSynth.OpenStrings[i] + frets[i], true);
                 }
             }
         }
