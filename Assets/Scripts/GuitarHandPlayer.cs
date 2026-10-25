@@ -55,8 +55,8 @@ namespace GuitarAR
             new Pattern("Свободный"),
             // Вниз, вниз с глушением, вверх, вверх, вниз с глушением, вверх.
             new Pattern("Шестёрка", Stroke.Down, Stroke.Mute, Stroke.Up, Stroke.Up, Stroke.Mute, Stroke.Up),
-            // Вниз, вниз с глушением, вверх, вниз, вниз с глушением, вверх, вниз, вверх.
-            new Pattern("Восьмёрка", Stroke.Down, Stroke.Mute, Stroke.Up, Stroke.Down, Stroke.Mute, Stroke.Up, Stroke.Down, Stroke.Up),
+            // Вниз, вниз с глушением, вверх, вверх, вверх, вниз, вниз с глушением, вверх.
+            new Pattern("Восьмёрка", Stroke.Down, Stroke.Mute, Stroke.Up, Stroke.Up, Stroke.Up, Stroke.Down, Stroke.Mute, Stroke.Up),
         };
 
         // Rhythm help (part of strum help): learns the player's tempo from their strikes and, when a
