@@ -49,7 +49,7 @@ NOTE_SECONDS = 3.0      # Longest note kept; a strum cuts the ringing string any
 FADE_SECONDS = 0.25     # Fade at the end of a note that's still ringing.
 PRE_ROLL = 0.002        # Seconds kept before the pluck, so its attack isn't clipped.
 PEAK = 0.6              # Every note is scaled to this peak, as the synthesized notes are.
-MAX_CENTS = 45          # A note further than this from its expected pitch is an error.
+MAX_CENTS = 60          # A note further than this from its expected pitch is an error.
 NAMES = {"C": 0, "C#": 1, "Db": 1, "D": 2, "D#": 3, "Eb": 3, "E": 4, "F": 5, "F#": 6, "Gb": 6,
          "G": 7, "G#": 8, "Ab": 8, "A": 9, "A#": 10, "Bb": 10, "B": 11}
 
@@ -171,11 +171,13 @@ def remove_dc(samples):
 
 
 def find_onsets(samples, rate):
-    """Where each pluck starts: the level jumps well above what was ringing just before."""
+    """Where the level jumps well above what was ringing just before: (sample, level) pairs.
+    Plucks, but also some noise and swells in a ringing note; cut_run sorts them out by pitch."""
     block = 256
     levels = [max(abs(x) for x in samples[i:i + block]) for i in range(0, len(samples) - block, block)]
     floor = 0.08 * max(levels)
-    spacing = int(0.25 * rate / block)
+    spacing = max(1, int(0.03 * rate / block))
+    attack = max(1, int(0.03 * rate / block))
     onsets, last = [], -spacing
     for b in range(8, len(levels)):
         before = sum(levels[b - 8:b - 2]) / 6.0
@@ -185,7 +187,7 @@ def find_onsets(samples, rate):
             threshold = 0.2 * levels[b]
             while start < (b + 1) * block and abs(samples[start]) < threshold:
                 start += 1
-            onsets.append(start)
+            onsets.append((start, max(levels[b:b + attack])))
             last = b
     return onsets
 
@@ -274,26 +276,58 @@ def write_wav(path, samples, rate):
         w.writeframes(values.tobytes())
 
 
+def quietest(samples, begin, end, block=480):
+    """The lowest peak level of any short block between two points."""
+    levels = [max(abs(x) for x in samples[i:i + block]) for i in range(begin, end - block, block)]
+    return min(levels, default=0.0)
+
+
 def cut_run(path, low, high):
-    """The notes of one chromatic run: {midi: (samples, rate, start, end)}."""
+    """The notes of one chromatic run: {midi: (samples, rate, start, end)}.
+
+    Every jump in level is a candidate pluck, named by the pitch it rings at. A candidate with
+    no clear pitch in the run's range, or the same pitch as the note before it, is noise or a
+    swell in that note and stays part of it. The recording's overall tuning is allowed for, so
+    a guitar tuned a little flat doesn't round notes down to the semitone below."""
     samples, rate = read_audio(path)
-    onsets = find_onsets(samples, rate)
-    expected = high - low + 1
-    notes = {}
-    if len(onsets) == expected:
-        labels = list(range(low, high + 1))
-    else:
-        # Something was split or merged: name the notes by their pitch instead of their order.
-        print(f"  {os.path.basename(path)}: {len(onsets)} plucks found, {expected} expected; naming them by pitch")
-        labels = []
-        for start in onsets:
-            f = measure_pitch(samples, rate, start, low, high)
-            labels.append(None if f is None else int(round(69 + 12 * math.log2(f / 440.0))))
-    for i, (start, midi) in enumerate(zip(onsets, labels)):
-        if midi is None or midi in notes or not low <= midi <= high:
+    candidates = find_onsets(samples, rate)
+    heard = []
+    for start, level in candidates:
+        # A knock or squeak dies at once; a pluck still rings a moment later.
+        ringing = max((abs(x) for x in samples[start + int(0.3 * rate):start + int(0.4 * rate)]), default=0.0)
+        if ringing < 0.15 * level:
+            heard.append(None)
             continue
-        end = onsets[i + 1] - int(0.005 * rate) if i + 1 < len(onsets) else len(samples)
-        notes[midi] = (samples, rate, start, end)
+        f = measure_pitch(samples, rate, start, low, high)
+        heard.append(None if f is None else 69 + 12 * math.log2(f / 440.0))
+    deviations = sorted(m - round(m) for m in heard if m is not None)
+    tuning = deviations[len(deviations) // 2] if deviations else 0.0
+
+    plucks = []  # [midi, start, level]
+    for (start, level), m in zip(candidates, heard):
+        if m is None:
+            continue
+        midi = int(round(m - tuning))
+        if not low <= midi <= high:
+            continue
+        if plucks and plucks[-1][0] == midi:
+            # The same note again. Something just before the pluck (a breath, the finger
+            # touching the string) is weaker than the pluck and soon over: start at the pluck.
+            previous = plucks[-1][1]
+            if level > 1.5 * plucks[-1][2] and (start - previous < 0.35 * rate
+                                                 or quietest(samples, previous + int(0.03 * rate), start) < 0.1 * level):
+                plucks[-1][1:] = [start, level]
+            continue
+        plucks.append([midi, start, level])
+
+    notes = {}
+    for i, (midi, start, _) in enumerate(plucks):
+        end = plucks[i + 1][1] - int(0.005 * rate) if i + 1 < len(plucks) else len(samples)
+        notes.setdefault(midi, (samples, rate, start, end))
+    found = sorted(notes)
+    missing = [note_name(m) for m in range(low, high + 1) if m not in notes]
+    print(f"  {os.path.basename(path)}: {len(candidates)} candidates, {len(found)} of {high - low + 1} notes, "
+          f"tuned {tuning * 100:+.0f} cents{', missing ' + ' '.join(missing) if missing else ''}")
     return notes
 
 
