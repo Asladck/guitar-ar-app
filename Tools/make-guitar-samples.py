@@ -20,6 +20,7 @@ import array
 import math
 import os
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -43,6 +44,7 @@ RUNS = {
     6: ["sul_E.E4B4"],
 }
 
+RATE = 48000            # Unity's output rate (ProjectSettings/AudioManager), so notes play unresampled.
 NOTE_SECONDS = 3.0      # Longest note kept; a strum cuts the ringing string anyway.
 FADE_SECONDS = 0.25     # Fade at the end of a note that's still ringing.
 PRE_ROLL = 0.002        # Seconds kept before the pluck, so its attack isn't clipped.
@@ -79,7 +81,26 @@ def download(dynamic, run):
         print(f"downloading {name}")
         subprocess.run(["curl", "-fsSL", "--retry", "3", "-o", path + ".part", BASE_URL + name], check=True)
         os.replace(path + ".part", path)
-    return path
+    return convert(path)
+
+
+def convert(path):
+    """The recording as 16-bit mono WAV at RATE, made with macOS's afconvert or with ffmpeg
+    (their resampling is far better and faster than anything done here). Without either, the
+    original is read as it is."""
+    out = path[:-4] + f".{RATE // 1000}k.wav"
+    if os.path.exists(out):
+        return out
+    if shutil.which("afconvert"):
+        command = ["afconvert", "-f", "WAVE", "-d", f"LEI16@{RATE}", "-c", "1", path, out + ".part"]
+    elif shutil.which("ffmpeg"):
+        command = ["ffmpeg", "-loglevel", "error", "-y", "-i", path, "-ac", "1", "-ar", str(RATE), "-c:a", "pcm_s16le", "-f", "wav", out + ".part"]
+    else:
+        print(f"  no afconvert or ffmpeg: using {os.path.basename(path)} at its own rate")
+        return path
+    subprocess.run(command, check=True)
+    os.replace(out + ".part", out)
+    return out
 
 
 def read_extended(data):
