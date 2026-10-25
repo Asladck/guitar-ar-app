@@ -3,6 +3,8 @@ using System.Runtime.InteropServices;
 using UnityEngine;
 #if ENABLE_INPUT_SYSTEM
 using UnityEngine.InputSystem;
+using UnityEngine.InputSystem.EnhancedTouch;
+using Touch = UnityEngine.InputSystem.EnhancedTouch.Touch;
 #endif
 
 namespace GuitarAR
@@ -46,6 +48,14 @@ namespace GuitarAR
         const float k_TapReach = 0.045f;       // How close a tap must be to a string (fraction of screen width).
 
         static Rect s_ChordRect;
+        static string s_LastTapInfo = "-";
+
+        // Temporary on-screen diagnostics while the strings don't respond on device.
+        bool m_HasCamera;
+        int m_TouchCount;
+        int m_PluckCount;
+        string m_LastError;
+        GUIStyle m_DiagnosticStyle;
         static GuitarStrummer s_Instance;
 
         readonly Dictionary<int, Vector2> m_LastPositions = new Dictionary<int, Vector2>();
@@ -99,9 +109,21 @@ namespace GuitarAR
                 m_ChordLabels[i] = k_Chords[i].Name;
         }
 
-        void OnEnable() => AudioSettings.OnAudioConfigurationChanged += OnAudioConfigurationChanged;
+        void OnEnable()
+        {
+            AudioSettings.OnAudioConfigurationChanged += OnAudioConfigurationChanged;
+#if ENABLE_INPUT_SYSTEM
+            EnhancedTouchSupport.Enable();
+#endif
+        }
 
-        void OnDisable() => AudioSettings.OnAudioConfigurationChanged -= OnAudioConfigurationChanged;
+        void OnDisable()
+        {
+            AudioSettings.OnAudioConfigurationChanged -= OnAudioConfigurationChanged;
+#if ENABLE_INPUT_SYSTEM
+            EnhancedTouchSupport.Disable();
+#endif
+        }
 
         void Start()
         {
@@ -128,20 +150,31 @@ namespace GuitarAR
 
         void Update()
         {
+            try
+            {
+                ReadInput();
+            }
+            catch (System.Exception e)
+            {
+                m_LastError = e.GetType().Name + ": " + e.Message;
+                Debug.LogException(e);
+            }
+        }
+
+        void ReadInput()
+        {
             var cam = Camera.main;
+            m_HasCamera = cam != null;
             if (cam == null)
                 return;
 
             m_SeenTouches.Clear();
 #if ENABLE_INPUT_SYSTEM
-            var touchscreen = Touchscreen.current;
-            if (touchscreen != null)
+            foreach (var touch in Touch.activeTouches)
             {
-                foreach (var touch in touchscreen.touches)
-                {
-                    if (touch.press.isPressed)
-                        Track(touch.touchId.ReadValue(), touch.position.ReadValue(), touch.press.wasPressedThisFrame, cam);
-                }
+                var phase = touch.phase;
+                if (phase != UnityEngine.InputSystem.TouchPhase.Ended && phase != UnityEngine.InputSystem.TouchPhase.Canceled)
+                    Track(touch.touchId, touch.screenPosition, phase == UnityEngine.InputSystem.TouchPhase.Began, cam);
             }
 
             var mouse = Mouse.current;
@@ -176,6 +209,7 @@ namespace GuitarAR
         void Track(int id, Vector2 position, bool began, Camera cam)
         {
             m_SeenTouches.Add(id);
+            m_TouchCount++;
 
             if (began || !m_LastPositions.ContainsKey(id))
             {
@@ -259,6 +293,7 @@ namespace GuitarAR
             m_LastPluck[key] = Time.time;
 
             guitar.Pluck(stringIndex, GuitarSynth.OpenStrings[stringIndex] + fret, volume, delay);
+            m_PluckCount++;
             if (!m_HasPlayed)
                 Debug.Log($"[GuitarAR] First pluck: string {stringIndex + 1}, volume {volume:0.00}");
             m_HasPlayed = true;
@@ -314,7 +349,9 @@ namespace GuitarAR
             }
 
             spacing = (lastMiddle - firstMiddle).magnitude / (GuitarStrings.StringCount - 1);
-            return best <= Mathf.Max(Screen.width * k_TapReach, spacing * 0.6f);
+            float reach = Mathf.Max(Screen.width * k_TapReach, spacing * 0.6f);
+            s_LastTapInfo = $"до струны {best:0} px (порог {reach:0}), между струнами {spacing:0} px";
+            return best <= reach;
         }
 
         static float DistanceToSegment(Vector2 p, Vector2 a, Vector2 b)
@@ -343,6 +380,7 @@ namespace GuitarAR
 
         void OnGUI()
         {
+            DrawDiagnostics();
             if (!AnyPlayable())
             {
                 s_ChordRect = default;
@@ -364,6 +402,37 @@ namespace GuitarAR
                 m_Chord = selected;
                 PrepareChord(m_Chord);
             }
+        }
+
+        void DrawDiagnostics()
+        {
+            if (m_DiagnosticStyle == null)
+            {
+                m_DiagnosticStyle = new GUIStyle(GUI.skin.label)
+                {
+                    fontSize = Mathf.RoundToInt(Screen.height * 0.013f),
+                    wordWrap = true,
+                    normal = { textColor = Color.yellow },
+                };
+            }
+
+            int playable = 0;
+            foreach (var guitar in GuitarStrings.Active)
+            {
+                if (guitar.IsPlayable)
+                    playable++;
+            }
+
+            var cam = Camera.main;
+            string onScreen = "-";
+            if (cam != null && playable > 0 && GuitarStrings.Active[0].TryGetScreenSegment(0, cam, out var a, out var b))
+                onScreen = $"{a:0} -> {b:0}";
+
+            string text = $"камера: {(m_HasCamera ? "да" : "НЕТ")} | гитар: {GuitarStrings.Active.Count}, играбельных: {playable}\n"
+                + $"касаний: {m_TouchCount}, щипков: {m_PluckCount}, звук: {AudioSettings.GetConfiguration().sampleRate} Гц\n"
+                + $"струна 1 на экране: {onScreen}\nпоследнее касание: {s_LastTapInfo}"
+                + (m_LastError != null ? "\nошибка: " + m_LastError : "");
+            GUI.Label(new Rect(Screen.width * 0.03f, Screen.height * 0.19f, Screen.width * 0.94f, Screen.height * 0.12f), text, m_DiagnosticStyle);
         }
 
 #if UNITY_IOS && !UNITY_EDITOR

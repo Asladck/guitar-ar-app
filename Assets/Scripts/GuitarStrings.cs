@@ -13,8 +13,8 @@ namespace GuitarAR
     {
         public const int StringCount = 6;
 
-        const float k_WobbleAmplitude = 0.0015f; // Meters.
-        const float k_WobbleFrequency = 28f;
+        const float k_WobbleAmplitude = 0.004f;  // Meters.
+        const float k_WobbleFrequency = 12f;
         const float k_WobbleDecay = 0.45f;       // Seconds.
         const float k_StereoSpread = 0.35f;
 
