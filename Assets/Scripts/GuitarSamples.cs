@@ -51,9 +51,12 @@ namespace GuitarAR
                 return false;
 
             // Harder strokes use the hard take more often, so repeated strums don't all sound alike.
+            // Prefer the very note at the other dynamic over a neighbouring fret retuned.
             int first = Random.value < Mathf.InverseLerp(k_SoftVolume, k_HardVolume, volume) ? 1 : 0;
-            if (!TryFind(first, stringIndex, fret, out clip, out int recordedFret)
-                && !TryFind(1 - first, stringIndex, fret, out clip, out recordedFret))
+            if (!TryFind(first, stringIndex, fret, 0, out clip, out int recordedFret)
+                && !TryFind(1 - first, stringIndex, fret, 0, out clip, out recordedFret)
+                && !TryFind(first, stringIndex, fret, k_MaxBorrow, out clip, out recordedFret)
+                && !TryFind(1 - first, stringIndex, fret, k_MaxBorrow, out clip, out recordedFret))
                 return false;
 
             pitch = Mathf.Pow(2f, (fret - recordedFret) / 12f);
@@ -71,14 +74,14 @@ namespace GuitarAR
         {
             for (int dynamic = 0; dynamic < k_Dynamics.Length; dynamic++)
             {
-                if (TryFind(dynamic, stringIndex, fret, out var clip, out _))
+                if (TryFind(dynamic, stringIndex, fret, k_MaxBorrow, out var clip, out _))
                     Muted(clip);
             }
         }
 
-        static bool TryFind(int dynamic, int stringIndex, int fret, out AudioClip clip, out int recordedFret)
+        static bool TryFind(int dynamic, int stringIndex, int fret, int maxBorrow, out AudioClip clip, out int recordedFret)
         {
-            for (int distance = 0; distance <= k_MaxBorrow; distance++)
+            for (int distance = 0; distance <= maxBorrow; distance++)
             {
                 for (int side = -1; side <= 1; side += 2)
                 {

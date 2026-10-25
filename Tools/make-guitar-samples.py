@@ -295,7 +295,7 @@ def cut_run(path, low, high):
     for start, level in candidates:
         # A knock or squeak dies at once; a pluck still rings a moment later.
         ringing = max((abs(x) for x in samples[start + int(0.3 * rate):start + int(0.4 * rate)]), default=0.0)
-        if ringing < 0.15 * level:
+        if ringing < 0.03 * level:
             heard.append(None)
             continue
         f = measure_pitch(samples, rate, start, low, high)
@@ -333,7 +333,8 @@ def cut_run(path, low, high):
 
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    problems = 0
+    made = set()
+    written = skipped = 0
     for dynamic in DYNAMICS:
         for string, runs in RUNS.items():
             notes = {}
@@ -347,7 +348,7 @@ def main():
                 label = f"{dynamic}_s{string}_f{fret}"
                 if midi not in notes:
                     print(f"{label} {note_name(midi):4} MISSING")
-                    problems += 1
+                    skipped += 1
                     continue
                 samples, rate, start, end = notes[midi]
                 begin = max(0, start - int(PRE_ROLL * rate))
@@ -355,12 +356,12 @@ def main():
                 found = measure_pitch(samples, rate, start, midi, midi)
                 if found is None:
                     print(f"{label} {note_name(midi):4} no clear pitch")
-                    problems += 1
+                    skipped += 1
                     continue
                 cents = 1200 * math.log2(found / frequency(midi))
                 if abs(cents) > MAX_CENTS:
                     print(f"{label} {note_name(midi):4} off by {cents:+.0f} cents")
-                    problems += 1
+                    skipped += 1
                     continue
 
                 # Retune, then cut the note out. Read a little extra so the cut lands right.
@@ -370,8 +371,16 @@ def main():
                 note = shape(note[:limit - begin], rate)
                 write_wav(os.path.join(OUTPUT_DIR, label + ".wav"), note, rate)
                 print(f"{label} {note_name(midi):4} {cents:+4.0f} cents  {len(note) / rate:.2f} s")
-    if problems:
-        print(f"{problems} notes could not be made")
+                made.add((string, fret))
+                written += 1
+
+    # A note that couldn't be cut is played from the other dynamic or a neighbouring fret,
+    # retuned (GuitarSamples.cs). Only a fret with nothing close by is a real gap.
+    gaps = [f"s{string}_f{fret}" for string in RUNS for fret in FRETS
+            if not any((string, f) in made for f in range(fret - 2, fret + 3))]
+    print(f"{written} notes written, {skipped} skipped (played from a neighbour instead)")
+    if gaps:
+        print("no recording within 2 frets for: " + " ".join(gaps))
         sys.exit(1)
     print(f"done: {OUTPUT_DIR}")
 
