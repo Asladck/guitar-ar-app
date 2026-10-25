@@ -133,6 +133,11 @@ namespace GuitarAR
         double m_LastTimestamp;
         ARSession m_Session;
         ARCameraManager m_CameraManager;
+        readonly GuitarChordReader m_ChordReader = new GuitarChordReader();
+        const string k_ChordModeKey = "GuitarAR.ChordMode";
+        static readonly string[] k_ChordModeLabels = { "Аккорд: гриф", "Аккорд: жесты", "Аккорд: кнопки" };
+        static Rect s_ChordModeRect;
+        GUIStyle m_GuideStyle;
         Texture2D m_Dot;
         GUIStyle m_ButtonStyle;
 
@@ -151,7 +156,7 @@ namespace GuitarAR
         public static bool IsOverButton(Vector2 screenPosition)
         {
             var guiPoint = new Vector2(screenPosition.x, Screen.height - screenPosition.y);
-            return s_AssistRect.Contains(guiPoint) || s_PatternRect.Contains(guiPoint);
+            return s_AssistRect.Contains(guiPoint) || s_PatternRect.Contains(guiPoint) || s_ChordModeRect.Contains(guiPoint);
         }
 
         void Awake()
@@ -160,6 +165,7 @@ namespace GuitarAR
             {
                 s_Assist = PlayerPrefs.GetInt(k_AssistKey, 1) != 0;
                 s_Pattern = Mathf.Clamp(PlayerPrefs.GetInt(k_PatternKey, 0), 0, k_Patterns.Length - 1);
+                m_ChordReader.CurrentMode = (GuitarChordReader.Mode)Mathf.Clamp(PlayerPrefs.GetInt(k_ChordModeKey, 0), 0, 2);
             }
             catch (System.Exception)
             {
@@ -201,21 +207,27 @@ namespace GuitarAR
             bool frontCamera = m_CameraManager != null && m_CameraManager.currentFacingDirection == CameraFacingDirection.User;
             int rightHand = frontCamera ? -k_RightHand : k_RightHand;
 
-            int right = -1, left = 0;
+            int right = -1, left = -1;
             for (int h = 0; h < count; h++)
             {
                 if (m_Chirality[h] == rightHand && right < 0)
                     right = h;
-                else if (m_Chirality[h] == -rightHand)
-                    left++;
+                else if (m_Chirality[h] == -rightHand && left < 0)
+                    left = h;
             }
+
+            // The left hand picks the chord.
+            if (left >= 0)
+                ReadLeftHand(left, timestamp);
+            else
+                m_ChordReader.Lost();
 
             if (right < 0 || !TryRead(right, out var tip, out float ratio, out bool ratioKnown))
             {
                 // A blurred or briefly missed hand keeps its last fingertip for a moment.
                 if (m_HasTip && timestamp - m_TipTime > k_MaxGap)
                     m_HasTip = false;
-                s_Diagnostic = $"рук: {count} (левых {left}), правая: не видно";
+                s_Diagnostic = $"рук: {count}, правая: не видно\n{m_ChordReader.Diagnostic}";
                 return;
             }
 
@@ -235,7 +247,25 @@ namespace GuitarAR
             m_HasTip = true;
             m_Tip = tip;
             m_TipTime = timestamp;
-            s_Diagnostic = $"рук: {count} (левых {left}), правая: палец {(m_Raised ? "поднят" : "опущен")} ({ratio:0.00}), кончик {tip:0}";
+            s_Diagnostic = $"рук: {count}, правая: палец {(m_Raised ? "поднят" : "опущен")} ({ratio:0.00}), кончик {tip:0}\n{m_ChordReader.Diagnostic}";
+        }
+
+        static readonly Joint[] k_FingerTips = { Joint.IndexTip, Joint.MiddleTip, Joint.RingTip, Joint.LittleTip };
+        static readonly Joint[] k_FingerKnuckles = { Joint.IndexPIP, Joint.MiddlePIP, Joint.RingPIP, Joint.LittlePIP };
+
+        readonly Vector2[] m_LeftTips = new Vector2[GuitarChordReader.FingerCount];
+        readonly Vector2[] m_LeftKnuckles = new Vector2[GuitarChordReader.FingerCount];
+        readonly bool[] m_LeftSeen = new bool[GuitarChordReader.FingerCount];
+
+        void ReadLeftHand(int hand, double timestamp)
+        {
+            bool wristSeen = TryGetJoint(hand, Joint.Wrist, out var wrist);
+            for (int f = 0; f < GuitarChordReader.FingerCount; f++)
+            {
+                m_LeftSeen[f] = TryGetJoint(hand, k_FingerTips[f], out m_LeftTips[f])
+                    & TryGetJoint(hand, k_FingerKnuckles[f], out m_LeftKnuckles[f]);
+            }
+            m_ChordReader.Read(wrist, wristSeen, m_LeftTips, m_LeftKnuckles, m_LeftSeen, timestamp);
         }
 
         void Move(Vector2 from, Vector2 to, float seconds)
@@ -574,13 +604,30 @@ namespace GuitarAR
             {
                 s_AssistRect = default;
                 s_PatternRect = default;
+                s_ChordModeRect = default;
                 return;
             }
             if (m_ButtonStyle == null)
                 m_ButtonStyle = new GUIStyle(GUI.skin.button) { fontSize = Mathf.RoundToInt(Screen.height * 0.016f), fontStyle = FontStyle.Bold };
-            s_AssistRect = new Rect(Screen.width * 0.05f, Screen.height * 0.345f, Screen.width * 0.9f, Screen.height * 0.045f);
+            if (m_GuideStyle == null)
+                m_GuideStyle = new GUIStyle(GUI.skin.label) { fontSize = Mathf.RoundToInt(Screen.height * 0.014f), wordWrap = true, alignment = TextAnchor.UpperCenter, normal = { textColor = Color.white } };
+            m_ChordReader.DrawGuide(m_Dot, m_GuideStyle);
+
+            s_AssistRect = new Rect(Screen.width * 0.05f, Screen.height * 0.345f, Screen.width * 0.44f, Screen.height * 0.045f);
+            s_ChordModeRect = new Rect(Screen.width * 0.51f, Screen.height * 0.345f, Screen.width * 0.44f, Screen.height * 0.045f);
+            if (GUI.Button(s_ChordModeRect, k_ChordModeLabels[(int)m_ChordReader.CurrentMode], m_ButtonStyle))
+            {
+                m_ChordReader.CurrentMode = (GuitarChordReader.Mode)(((int)m_ChordReader.CurrentMode + 1) % 3);
+                try
+                {
+                    PlayerPrefs.SetInt(k_ChordModeKey, (int)m_ChordReader.CurrentMode);
+                }
+                catch (System.Exception)
+                {
+                }
+            }
             DrawPatterns();
-            bool assist = GUI.Toggle(s_AssistRect, s_Assist, s_Assist ? "Помощь с боем: вкл" : "Помощь с боем: выкл", m_ButtonStyle);
+            bool assist = GUI.Toggle(s_AssistRect, s_Assist, s_Assist ? "Помощь боя: вкл" : "Помощь боя: выкл", m_ButtonStyle);
             if (assist != s_Assist)
             {
                 s_Assist = assist;

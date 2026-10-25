@@ -67,7 +67,9 @@ ARKit can't track bodies, track faces and detect planes in the same session, so 
 
 **Playing with your hand:** raise your right index finger and move it across the strings in
 front of the camera. A quick sweep strums (down from the low E, or a lighter up strum), a slow pass
-plucks one string; with the finger down nothing plays. **Strum help** (on by default, button on
+plucks one string; with the finger down nothing plays. Your **left hand picks the chord** (button *Аккорд*): on the neck, put your fingertips where the
+chord's fingering goes (cyan dots show where); with gestures, hold up fingers (1 = Em, 2 = Am,
+3 = C, 4 = G, index + little = D, little = E); or use the chord buttons. **Strum help** (on by default, button on
 screen) makes any quick pass through a wide zone around the strings a full strum, so grazing a
 string on the way doesn't make stray notes.
 

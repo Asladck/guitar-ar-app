@@ -14,8 +14,9 @@ namespace GuitarAR
     [RequireComponent(typeof(ARFaceManager))]
     public class GuitarSelfieAttacher : GuitarWearer
     {
-        // Where the body of the guitar goes in the picture (0..1 from the bottom left), above the buttons.
-        static readonly Vector2 k_BellyOnScreen = new Vector2(0.5f, 0.3f);
+        // Where the body of the guitar goes in the picture (0..1 from the bottom left): above the
+        // buttons, and right of centre so the neck's first frets, where chords are fingered, stay on screen.
+        static readonly Vector2 k_BellyOnScreen = new Vector2(0.72f, 0.3f);
 
         // Full-size guitar length, bottom of the body to the tip of the headstock, in meters.
         const float k_GuitarLength = 1.05f;

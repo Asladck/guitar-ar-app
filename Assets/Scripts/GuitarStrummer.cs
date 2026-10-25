@@ -70,6 +70,20 @@ namespace GuitarAR
         string[] m_ChordLabels;
         GUIStyle m_ButtonStyle;
 
+        /// <summary>The chord the strings play, as an index into the chord buttons.</summary>
+        public static int CurrentChord => s_Instance != null ? s_Instance.m_Chord : 0;
+
+        public static string ChordName(int chord) => k_Chords[chord].Name;
+
+        /// <summary>Switches chord, as if its button was pressed.</summary>
+        public static void SetChord(int chord)
+        {
+            if (s_Instance == null || chord < 0 || chord >= k_Chords.Length || chord == s_Instance.m_Chord)
+                return;
+            s_Instance.m_Chord = chord;
+            PrepareChord(chord);
+        }
+
         /// <summary>A hint for the player, or null once they've played.</summary>
         public static string Hint => s_Instance != null && !s_Instance.m_HasPlayed && AnyPlayable() ? "Подними указательный палец и проведи рукой по струнам" : null;
 
