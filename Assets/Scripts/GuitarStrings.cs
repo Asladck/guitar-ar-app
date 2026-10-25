@@ -4,7 +4,7 @@ using UnityEngine;
 namespace GuitarAR
 {
     /// <summary>
-    /// The playable strings of one guitar: where they are on screen, a voice per string, and a
+    /// The playable strings of one guitar: where they are on screen, two voices per string, and a
     /// little wobble when one is plucked. Looks for children named String1..String6 (String1 is
     /// the low E); a guitar model needs the same names to be playable.
     /// <see cref="GuitarStrummer"/> turns touches into plucks.
@@ -17,6 +17,9 @@ namespace GuitarAR
         const float k_WobbleFrequency = 12f;
         const float k_WobbleDecay = 0.45f;       // Seconds.
         const float k_StereoSpread = 0.35f;
+        const int k_VoicesPerString = 2;         // A new note starts on the free voice while the old one ends.
+        const float k_Overlap = 0.03f;           // Seconds the old note rings under the new one, hiding the cut.
+        const float k_MixGain = 0.45f;           // Six strings at full volume would add up past 1 and clip.
 
         static readonly List<GuitarStrings> s_Active = new List<GuitarStrings>();
 
@@ -24,7 +27,8 @@ namespace GuitarAR
         readonly Vector3[] m_RestPositions = new Vector3[StringCount];
         readonly float[] m_PluckTimes = new float[StringCount];
         readonly float[] m_PluckStrengths = new float[StringCount];
-        readonly AudioSource[] m_Voices = new AudioSource[StringCount];
+        readonly AudioSource[] m_Voices = new AudioSource[StringCount * k_VoicesPerString];
+        readonly int[] m_LastVoice = new int[StringCount];
 
         /// <summary>How many string voices are sounding right now, on all guitars.</summary>
         public static int PlayingVoices
@@ -59,11 +63,14 @@ namespace GuitarAR
                     m_RestPositions[i] = m_Strings[i].localPosition;
                 m_PluckTimes[i] = float.NegativeInfinity;
 
-                var voice = gameObject.AddComponent<AudioSource>();
-                voice.playOnAwake = false;
-                voice.spatialBlend = 0f;
-                voice.panStereo = Mathf.Lerp(-k_StereoSpread, k_StereoSpread, i / (StringCount - 1f));
-                m_Voices[i] = voice;
+                for (int v = 0; v < k_VoicesPerString; v++)
+                {
+                    var voice = gameObject.AddComponent<AudioSource>();
+                    voice.playOnAwake = false;
+                    voice.spatialBlend = 0f;
+                    voice.panStereo = Mathf.Lerp(-k_StereoSpread, k_StereoSpread, i / (StringCount - 1f));
+                    m_Voices[i * k_VoicesPerString + v] = voice;
+                }
             }
         }
 
@@ -72,10 +79,13 @@ namespace GuitarAR
         void OnDisable()
         {
             s_Active.Remove(this);
+            foreach (var voice in m_Voices)
+            {
+                if (voice != null)
+                    voice.Stop();
+            }
             for (int i = 0; i < StringCount; i++)
             {
-                if (m_Voices[i] != null)
-                    m_Voices[i].Stop();
                 m_PluckTimes[i] = float.NegativeInfinity;
                 if (m_Strings[i] != null)
                     m_Strings[i].localPosition = m_RestPositions[i];
@@ -104,18 +114,26 @@ namespace GuitarAR
         /// <summary>
         /// Plays a string as the given MIDI note, at a volume from 0 to 1, after a short delay in
         /// seconds (so a strum rolls across the strings instead of hitting them all at once).
-        /// A string that's plucked again stops ringing first, like a real one.
+        /// A string that's plucked again stops ringing when the new note starts, like a real one.
         /// </summary>
         public void Pluck(int stringIndex, int midiNote, float volume, float delay = 0f, bool muted = false)
         {
-            var voice = m_Voices[stringIndex];
+            // Start on the other voice and end the ringing one when the new note sounds, not now:
+            // stopping it at once would leave a silent gap until a delayed note starts.
+            int previous = stringIndex * k_VoicesPerString + m_LastVoice[stringIndex];
+            m_LastVoice[stringIndex] = (m_LastVoice[stringIndex] + 1) % k_VoicesPerString;
+            var voice = m_Voices[stringIndex * k_VoicesPerString + m_LastVoice[stringIndex]];
+
+            double start = AudioSettings.dspTime + Mathf.Max(0f, delay);
             voice.Stop();
             voice.clip = GuitarSynth.Note(midiNote, muted);
-            voice.volume = volume;
+            voice.volume = volume * k_MixGain;
             if (delay > 0f)
-                voice.PlayScheduled(AudioSettings.dspTime + delay);
+                voice.PlayScheduled(start);
             else
                 voice.Play();
+            if (m_Voices[previous].isPlaying)
+                m_Voices[previous].SetScheduledEndTime(start + k_Overlap);
 
             m_PluckTimes[stringIndex] = Time.time + delay;
             m_PluckStrengths[stringIndex] = volume;
