@@ -15,7 +15,7 @@ namespace GuitarAR
     public class GuitarSelfieAttacher : GuitarWearer
     {
         // Where the body of the guitar goes in the picture (0..1 from the bottom left), above the buttons.
-        static readonly Vector2 k_BellyOnScreen = new Vector2(0.5f, 0.4f);
+        static readonly Vector2 k_BellyOnScreen = new Vector2(0.5f, 0.3f);
 
         // Full-size guitar length, bottom of the body to the tip of the headstock, in meters.
         const float k_GuitarLength = 1.05f;

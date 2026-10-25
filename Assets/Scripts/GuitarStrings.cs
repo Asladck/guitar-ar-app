@@ -26,6 +26,24 @@ namespace GuitarAR
         readonly float[] m_PluckStrengths = new float[StringCount];
         readonly AudioSource[] m_Voices = new AudioSource[StringCount];
 
+        /// <summary>How many string voices are sounding right now, on all guitars.</summary>
+        public static int PlayingVoices
+        {
+            get
+            {
+                int playing = 0;
+                foreach (var guitar in s_Active)
+                {
+                    foreach (var voice in guitar.m_Voices)
+                    {
+                        if (voice != null && voice.isPlaying)
+                            playing++;
+                    }
+                }
+                return playing;
+            }
+        }
+
         /// <summary>Guitars that are enabled and shown, so they can be played.</summary>
         public static IReadOnlyList<GuitarStrings> Active => s_Active;
 

@@ -106,7 +106,7 @@ namespace GuitarAR
                     Move(h, before.Tip, now.Tip, (float)(now.Time - before.Time));
             }
 
-            s_Diagnostic = $"руки: {count}, палец поднят: {raised}";
+            s_Diagnostic = $"руки: {count}, палец поднят: {raised}" + (m_Hands[0].Valid ? $", кончик пальца {m_Hands[0].Tip:0}" : "");
         }
 
         void Move(int hand, Vector2 from, Vector2 to, float seconds)
@@ -209,6 +209,7 @@ namespace GuitarAR
                 m_Dot.Apply();
             }
 
+            GUI.depth = -10;
             float size = Screen.width * 0.04f;
             var color = GUI.color;
             foreach (var hand in m_Hands)

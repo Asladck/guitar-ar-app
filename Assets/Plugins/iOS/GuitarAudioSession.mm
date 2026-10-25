@@ -18,3 +18,16 @@ extern "C" int GuitarAR_PlayEvenWhenSilent()
     [session setActive:YES error:nil];
     return 1;
 }
+
+// One line about the audio session for the on-screen diagnostics. Unity frees the string.
+extern "C" char* GuitarAR_AudioInfo()
+{
+    AVAudioSession* session = [AVAudioSession sharedInstance];
+    NSString* outputs = @"";
+    for (AVAudioSessionPortDescription* port in session.currentRoute.outputs)
+        outputs = [outputs stringByAppendingFormat:@"%@ ", port.portType];
+    NSString* info = [NSString stringWithFormat:@"%@, громкость %.2f, %.0f Гц, выход: %@",
+        [session.category stringByReplacingOccurrencesOfString:@"AVAudioSessionCategory" withString:@""],
+        session.outputVolume, session.sampleRate, outputs];
+    return strdup(info.UTF8String);
+}

@@ -466,7 +466,8 @@ namespace GuitarAR
                 onScreen = $"{a:0} -> {b:0}";
 
             string text = $"камера: {(m_HasCamera ? "да" : "НЕТ")} | гитар: {GuitarStrings.Active.Count}, играбельных: {playable}\n"
-                + $"касаний: {m_TouchCount}, щипков: {m_PluckCount}, звук: {AudioSettings.GetConfiguration().sampleRate} Гц\n"
+                + $"касаний: {m_TouchCount}, щипков: {m_PluckCount}, звук: {AudioSettings.GetConfiguration().sampleRate} Гц, dsp {AudioSettings.dspTime:0.0}, звучит {GuitarStrings.PlayingVoices}\n"
+                + AudioSessionInfo() + "\n"
                 + $"струна 1 на экране: {onScreen}\nпоследнее касание: {s_LastTapInfo}"
                 + "\n" + GuitarHandPlayer.DiagnosticText
                 + (m_LastError != null ? "\nошибка: " + m_LastError : "");
@@ -476,18 +477,28 @@ namespace GuitarAR
 #if UNITY_IOS && !UNITY_EDITOR
         [DllImport("__Internal")]
         static extern int GuitarAR_PlayEvenWhenSilent();
+
+        [DllImport("__Internal")]
+        static extern string GuitarAR_AudioInfo();
 #endif
 
         /// <summary>
         /// iOS mutes Unity's default audio session with the silent switch, which would make the
         /// guitar seem broken; switch to the playback session that music apps use.
         /// </summary>
+        static string AudioSessionInfo()
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            return "сессия: " + GuitarAR_AudioInfo();
+#else
+            return "сессия: -";
+#endif
+        }
+
         static void PlayEvenWhenSilent()
         {
 #if UNITY_IOS && !UNITY_EDITOR
-            // Unity's output stops when the session's category changes under it; restart it.
-            if (GuitarAR_PlayEvenWhenSilent() != 0)
-                AudioSettings.Reset(AudioSettings.GetConfiguration());
+            GuitarAR_PlayEvenWhenSilent();
 #endif
         }
     }
