@@ -292,24 +292,24 @@ namespace GuitarAR
         /// Strums the chosen chord: a down strum rolls from the low E up, an up strum (lighter)
         /// rolls back over the top four strings.
         /// </summary>
-        public static void Strum(GuitarStrings guitar, bool down, float volume)
+        public static void Strum(GuitarStrings guitar, bool down, float volume, float delay = 0f)
         {
             if (s_Instance == null)
                 return;
             if (down)
             {
                 for (int i = 0; i < GuitarStrings.StringCount; i++)
-                    s_Instance.Play(guitar, i, volume, i * k_StrumRoll);
+                    s_Instance.Play(guitar, i, volume, delay + i * k_StrumRoll);
             }
             else
             {
                 for (int i = GuitarStrings.StringCount - 1, n = 0; i >= 2; i--, n++)
-                    s_Instance.Play(guitar, i, volume * 0.8f, n * k_StrumRoll * 0.8f);
+                    s_Instance.Play(guitar, i, volume * 0.8f, delay + n * k_StrumRoll * 0.8f);
             }
         }
 
         /// <summary>Plays the chord's bass: its lowest sounding string.</summary>
-        public static void Bass(GuitarStrings guitar, float volume)
+        public static void Bass(GuitarStrings guitar, float volume, float delay = 0f)
         {
             if (s_Instance == null)
                 return;
@@ -318,19 +318,19 @@ namespace GuitarAR
             {
                 if (frets[i] >= 0)
                 {
-                    s_Instance.Play(guitar, i, volume, 0f);
+                    s_Instance.Play(guitar, i, volume, delay);
                     return;
                 }
             }
         }
 
         /// <summary>A down strum damped by the palm (глушение): a short percussive chuck.</summary>
-        public static void MutedStrum(GuitarStrings guitar, float volume)
+        public static void MutedStrum(GuitarStrings guitar, float volume, float delay = 0f)
         {
             if (s_Instance == null)
                 return;
             for (int i = 0; i < GuitarStrings.StringCount; i++)
-                s_Instance.Play(guitar, i, volume * 0.7f, i * k_StrumRoll * 0.5f, true);
+                s_Instance.Play(guitar, i, volume * 0.7f, delay + i * k_StrumRoll * 0.5f, true);
         }
 
         /// <summary>Plucks one string of the chosen chord.</summary>

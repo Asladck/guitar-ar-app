@@ -53,9 +53,23 @@ namespace GuitarAR
         static readonly Pattern[] k_Patterns =
         {
             new Pattern("Свободный"),
-            new Pattern("Шестёрка", Stroke.Bass, Stroke.Down, Stroke.Up, Stroke.Up, Stroke.Down, Stroke.Up),
-            new Pattern("Восьмёрка", Stroke.Down, Stroke.Mute, Stroke.Up, Stroke.Up, Stroke.Mute, Stroke.Up, Stroke.Down, Stroke.Up),
+            // Вниз, вниз с глушением, вверх, вверх, вниз с глушением, вверх.
+            new Pattern("Шестёрка", Stroke.Down, Stroke.Mute, Stroke.Up, Stroke.Up, Stroke.Mute, Stroke.Up),
+            // Вниз, вниз с глушением, вверх, вниз, вниз с глушением, вверх, вниз, вверх.
+            new Pattern("Восьмёрка", Stroke.Down, Stroke.Mute, Stroke.Up, Stroke.Down, Stroke.Mute, Stroke.Up, Stroke.Down, Stroke.Up),
         };
+
+        // Rhythm help (part of strum help): learns the player's tempo from their strikes and, when a
+        // strike comes a little early, holds its sound back to the beat so the strumming sounds even.
+        const int k_TempoSamples = 4;
+        const float k_MinBeat = 0.12f;         // Seconds; shortest and longest gap between strikes
+        const float k_MaxBeat = 1.0f;          // that count towards the tempo.
+        const float k_MaxRhythmDelay = 0.07f;  // Seconds; the most a strike is held back.
+
+        readonly float[] m_Beats = new float[k_TempoSamples];
+        int m_BeatCount;
+        float m_Beat;                           // The player's tempo: seconds between strikes, 0 while unknown.
+        double m_LastSounded = double.NegativeInfinity;
 
         static int s_Pattern;
         static Rect s_PatternRect;
@@ -326,11 +340,12 @@ namespace GuitarAR
             float sinceLast = Time.time - m_LastStrumTime;
             m_LastStrumTime = Time.time;
             m_LastStrumDown = down;
+            float delay = s_Assist ? RhythmDelay(sinceLast) : 0f;
 
             var strokes = k_Patterns[s_Pattern].Strokes;
             if (strokes.Length == 0)
             {
-                GuitarStrummer.Strum(guitar, down, volume);
+                GuitarStrummer.Strum(guitar, down, volume, delay);
                 return;
             }
 
@@ -339,12 +354,51 @@ namespace GuitarAR
                 m_PatternStep = 0;
             switch (strokes[m_PatternStep])
             {
-                case Stroke.Bass: GuitarStrummer.Bass(guitar, volume); break;
-                case Stroke.Down: GuitarStrummer.Strum(guitar, true, volume); break;
-                case Stroke.Up: GuitarStrummer.Strum(guitar, false, volume); break;
-                case Stroke.Mute: GuitarStrummer.MutedStrum(guitar, volume); break;
+                case Stroke.Bass: GuitarStrummer.Bass(guitar, volume, delay); break;
+                case Stroke.Down: GuitarStrummer.Strum(guitar, true, volume, delay); break;
+                case Stroke.Up: GuitarStrummer.Strum(guitar, false, volume, delay); break;
+                case Stroke.Mute: GuitarStrummer.MutedStrum(guitar, volume, delay); break;
             }
             m_PatternStep = (m_PatternStep + 1) % strokes.Length;
+        }
+
+        /// <summary>
+        /// How long to hold back a strike so it lands on the player's own beat, and learns the beat.
+        /// Only early strikes are nudged (a sound can't be played before the strike), and only a little.
+        /// </summary>
+        float RhythmDelay(float sinceLastStrike)
+        {
+            double now = Time.timeAsDouble;
+            if (sinceLastStrike > k_PatternRestart)
+            {
+                m_BeatCount = 0;
+                m_Beat = 0f;
+            }
+            else if (sinceLastStrike >= k_MinBeat && sinceLastStrike <= k_MaxBeat)
+            {
+                m_Beats[m_BeatCount % k_TempoSamples] = sinceLastStrike;
+                m_BeatCount++;
+                m_Beat = Median();
+            }
+
+            float delay = 0f;
+            if (m_Beat > 0f && m_BeatCount >= 2)
+            {
+                float early = (float)(m_LastSounded + m_Beat - now);
+                if (early > 0f && early <= Mathf.Min(k_MaxRhythmDelay, m_Beat * 0.25f))
+                    delay = early;
+            }
+            m_LastSounded = now + delay;
+            return delay;
+        }
+
+        float Median()
+        {
+            int n = Mathf.Min(m_BeatCount, k_TempoSamples);
+            var sorted = new float[n];
+            System.Array.Copy(m_Beats, sorted, n);
+            System.Array.Sort(sorted);
+            return n % 2 == 1 ? sorted[n / 2] : 0.5f * (sorted[n / 2 - 1] + sorted[n / 2]);
         }
 
         static string Symbol(Stroke stroke)
@@ -472,16 +526,24 @@ namespace GuitarAR
 
             // The pattern's strokes, the next one highlighted.
             var strokes = k_Patterns[s_Pattern].Strokes;
-            if (strokes.Length == 0)
-                return;
             bool restarts = Time.time - m_LastStrumTime > k_PatternRestart;
             var text = new System.Text.StringBuilder();
+            if (strokes.Length == 0)
+                text.Append("бей как хочешь");
             for (int i = 0; i < strokes.Length; i++)
             {
                 bool next = restarts ? i == 0 : i == m_PatternStep;
                 text.Append(next ? $"<color=#ffd400><b>{Symbol(strokes[i])}</b></color>" : Symbol(strokes[i]));
                 if (i < strokes.Length - 1)
                     text.Append("  ");
+            }
+            if (s_Assist && m_Beat > 0f && !restarts)
+            {
+                // A light that flashes on the player's beat, to keep time by.
+                float phase = (float)((Time.timeAsDouble - m_LastSounded) / m_Beat);
+                bool onBeat = phase - Mathf.Floor(phase) < 0.2f;
+                text.Append(onBeat ? "   <color=#ffd400>●</color>" : "   <color=#ffffff55>●</color>");
+                text.Append($"  <size={Mathf.RoundToInt(Screen.height * 0.016f)}>{Mathf.RoundToInt(60f / m_Beat)} уд/мин</size>");
             }
             GUI.Label(new Rect(Screen.width * 0.05f, Screen.height * 0.445f, Screen.width * 0.9f, Screen.height * 0.04f), text.ToString(), m_PatternStyle);
         }
