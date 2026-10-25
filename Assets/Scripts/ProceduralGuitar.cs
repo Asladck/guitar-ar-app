@@ -16,7 +16,7 @@ namespace GuitarAR
         [SerializeField] Color m_MetalColor = new Color(0.85f, 0.85f, 0.80f);
 
         [Tooltip("Overall size. 1 is a full-size acoustic, which looks oversized on a phone screen.")]
-        [SerializeField] float m_Size = 0.7f;
+        [SerializeField] float m_Size = 0.84f;
 
         static Material s_PartMaterial;
 

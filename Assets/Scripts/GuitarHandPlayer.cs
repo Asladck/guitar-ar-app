@@ -5,7 +5,7 @@ using UnityEngine.XR.ARFoundation;
 namespace GuitarAR
 {
     /// <summary>
-    /// Play the guitar with your real hand in front of the camera: with the index finger raised,
+    /// Play the guitar with your real right hand in front of the camera: with the index finger raised,
     /// move it across the virtual strings. A quick sweep over the strings is a strum (down or up,
     /// by direction), a slow pass over a string plucks it. With the index finger down, hand
     /// movement is ignored. Hands come from Apple Vision on the AR camera image (iOS only).
@@ -17,29 +17,32 @@ namespace GuitarAR
 
         const int k_MaxHands = 2;
         const int k_JointCount = 11;
-        const float k_MinConfidence = 0.3f;
-        const float k_IndexRaisedRatio = 1.2f;  // Wrist-to-tip vs wrist-to-middle-knuckle when the finger is straight.
+        const int k_RightHand = 1;              // Vision's chirality for a right hand.
+        const float k_MinConfidence = 0.2f;
+        const float k_RaiseRatio = 1.2f;        // Wrist-to-tip vs wrist-to-middle-knuckle above which the index counts as raised...
+        const float k_LowerRatio = 1.05f;       // ...and below which it counts as lowered again (in between, it stays as it was).
         const float k_StrumSpeed = 0.8f;        // Screen heights per second; faster passes are strums.
-        const float k_StrumCooldown = 0.18f;    // Seconds before the same hand can strum again.
-        const float k_MaxGap = 0.25f;           // Seconds; longer gaps between detections don't count as a movement.
+        const float k_SameStrumCooldown = 0.15f;  // Seconds before another strum in the same direction...
+        const float k_OtherStrumCooldown = 0.06f; // ...or in the other direction (down-up strumming is quick).
+        const float k_MaxGap = 0.4f;            // Seconds; a fingertip not seen for longer starts a new movement.
+        const float k_BridgeOvershoot = 0.3f;   // Strings count as this much longer past the bridge, where people strum.
+        const float k_PluckDeadband = 0.004f;   // Fraction of screen height; smaller moves are tracking jitter.
 
-        struct HandState
-        {
-            public bool Valid;
-            public bool IndexRaised;
-            public Vector2 Tip;
-            public double Time;
-            public float LastStrum;
-        }
-
-        static string s_Diagnostic = "руки: -";
+        static string s_Diagnostic = "рука: -";
 
         readonly float[] m_Points = new float[k_MaxHands * k_JointCount * 3];
-        readonly HandState[] m_Hands = new HandState[k_MaxHands];
-        readonly HandState[] m_Previous = new HandState[k_MaxHands];
+        readonly int[] m_Chirality = new int[k_MaxHands];
         double m_LastTimestamp;
         ARSession m_Session;
         Texture2D m_Dot;
+
+        // The right hand's index fingertip, in screen pixels.
+        bool m_HasTip;
+        bool m_Raised;
+        Vector2 m_Tip;
+        double m_TipTime;
+        float m_LastStrumTime = float.NegativeInfinity;
+        bool m_LastStrumDown;
 
         /// <summary>A line for the on-screen diagnostics.</summary>
         public static string DiagnosticText => s_Diagnostic;
@@ -49,7 +52,7 @@ namespace GuitarAR
 #if UNITY_IOS && !UNITY_EDITOR
             if (!AnyPlayable())
             {
-                System.Array.Clear(m_Hands, 0, k_MaxHands);
+                m_HasTip = false;
                 return;
             }
 
@@ -61,7 +64,7 @@ namespace GuitarAR
 
             GuitarHands_Process(subsystem.nativePtr, Screen.width, Screen.height, InterfaceOrientation());
 
-            int count = GuitarHands_Get(m_Points, k_MaxHands, out double timestamp);
+            int count = GuitarHands_Get(m_Points, m_Chirality, k_MaxHands, out double timestamp);
             if (timestamp == m_LastTimestamp)
                 return;
             m_LastTimestamp = timestamp;
@@ -71,51 +74,51 @@ namespace GuitarAR
 
         void OnHands(int count, double timestamp)
         {
-            System.Array.Copy(m_Hands, m_Previous, k_MaxHands);
-            int raised = 0;
-            for (int h = 0; h < k_MaxHands; h++)
+            int right = -1, left = 0;
+            for (int h = 0; h < count; h++)
             {
-                var hand = new HandState();
-                if (h < count && TryRead(h, out var tip, out bool indexRaised))
-                {
-                    hand.Valid = true;
-                    hand.Tip = tip;
-                    hand.IndexRaised = indexRaised;
-                    hand.Time = timestamp;
-                    if (indexRaised)
-                        raised++;
-                }
-                m_Hands[h] = hand;
+                if (m_Chirality[h] == k_RightHand && right < 0)
+                    right = h;
+                else if (m_Chirality[h] == -k_RightHand)
+                    left++;
             }
 
-            // Vision doesn't keep hand order between frames; pair each hand with the nearest one before.
-            if (m_Hands[0].Valid && m_Hands[1].Valid && m_Previous[0].Valid && m_Previous[1].Valid)
+            if (right < 0 || !TryRead(right, out var tip, out float ratio, out bool ratioKnown))
             {
-                float kept = (m_Hands[0].Tip - m_Previous[0].Tip).sqrMagnitude + (m_Hands[1].Tip - m_Previous[1].Tip).sqrMagnitude;
-                float swapped = (m_Hands[0].Tip - m_Previous[1].Tip).sqrMagnitude + (m_Hands[1].Tip - m_Previous[0].Tip).sqrMagnitude;
-                if (swapped < kept)
-                    (m_Hands[0], m_Hands[1]) = (m_Hands[1], m_Hands[0]);
+                // A blurred or briefly missed hand keeps its last fingertip for a moment.
+                if (m_HasTip && timestamp - m_TipTime > k_MaxGap)
+                    m_HasTip = false;
+                s_Diagnostic = $"рук: {count} (левых {left}), правая: не видно";
+                return;
             }
 
-            for (int h = 0; h < k_MaxHands; h++)
+            // Hysteresis, so the finger doesn't flicker between raised and lowered mid-strum.
+            bool wasRaised = m_Raised;
+            if (ratioKnown)
             {
-                m_Hands[h].LastStrum = m_Previous[h].LastStrum;
-                var before = m_Previous[h];
-                var now = m_Hands[h];
-                if (now.Valid && before.Valid && now.IndexRaised && before.IndexRaised && now.Time - before.Time <= k_MaxGap)
-                    Move(h, before.Tip, now.Tip, (float)(now.Time - before.Time));
+                if (ratio > k_RaiseRatio)
+                    m_Raised = true;
+                else if (ratio < k_LowerRatio)
+                    m_Raised = false;
             }
 
-            s_Diagnostic = $"руки: {count}, палец поднят: {raised}" + (m_Hands[0].Valid ? $", кончик пальца {m_Hands[0].Tip:0}" : "");
+            if (m_HasTip && (m_Raised || wasRaised) && timestamp - m_TipTime <= k_MaxGap)
+                Move(m_Tip, tip, (float)(timestamp - m_TipTime));
+
+            m_HasTip = true;
+            m_Tip = tip;
+            m_TipTime = timestamp;
+            s_Diagnostic = $"рук: {count} (левых {left}), правая: палец {(m_Raised ? "поднят" : "опущен")} ({ratio:0.00}), кончик {tip:0}";
         }
 
-        void Move(int hand, Vector2 from, Vector2 to, float seconds)
+        void Move(Vector2 from, Vector2 to, float seconds)
         {
             var cam = Camera.main;
-            if (cam == null || from == to)
+            float distance = (to - from).magnitude / Screen.height;
+            if (cam == null || distance <= 0f)
                 return;
 
-            float speed = (to - from).magnitude / Mathf.Max(seconds, 1e-3f) / Screen.height;
+            float speed = distance / Mathf.Max(seconds, 1e-3f);
             float volume = Mathf.Clamp(0.5f + 0.2f * speed, 0.5f, 1f);
 
             foreach (var guitar in GuitarStrings.Active)
@@ -136,7 +139,8 @@ namespace GuitarAR
                         low = middle;
                     high = middle;
 
-                    if (GuitarStrummer.Intersect(from, to, bridge, nut, out float along))
+                    var pastBridge = bridge + (bridge - nut) * k_BridgeOvershoot;
+                    if (GuitarStrummer.Intersect(from, to, pastBridge, nut, out float along))
                     {
                         crossed++;
                         if (along < firstAlong)
@@ -151,14 +155,16 @@ namespace GuitarAR
 
                 if (speed >= k_StrumSpeed || crossed >= 3)
                 {
-                    if (Time.time - m_Hands[hand].LastStrum < k_StrumCooldown)
-                        return;
-                    m_Hands[hand].LastStrum = Time.time;
                     // Moving from the low E side towards the high E is a down strum.
                     bool down = Vector2.Dot(to - from, high - low) > 0f;
+                    float cooldown = down == m_LastStrumDown ? k_SameStrumCooldown : k_OtherStrumCooldown;
+                    if (Time.time - m_LastStrumTime < cooldown)
+                        return;
+                    m_LastStrumTime = Time.time;
+                    m_LastStrumDown = down;
                     GuitarStrummer.Strum(guitar, down, volume);
                 }
-                else
+                else if (distance >= k_PluckDeadband)
                 {
                     GuitarStrummer.PluckString(guitar, firstString, volume);
                 }
@@ -166,17 +172,21 @@ namespace GuitarAR
             }
         }
 
-        bool TryRead(int hand, out Vector2 indexTip, out bool indexRaised)
+        bool TryRead(int hand, out Vector2 indexTip, out float ratio, out bool ratioKnown)
         {
-            indexTip = default;
-            indexRaised = false;
+            ratio = 0f;
+            ratioKnown = false;
             if (!TryGetJoint(hand, Joint.IndexTip, out indexTip))
                 return false;
 
             if (TryGetJoint(hand, Joint.Wrist, out var wrist) && TryGetJoint(hand, Joint.IndexPIP, out var knuckle))
             {
                 float toKnuckle = (knuckle - wrist).magnitude;
-                indexRaised = toKnuckle > 1f && (indexTip - wrist).magnitude > toKnuckle * k_IndexRaisedRatio;
+                if (toKnuckle > 1f)
+                {
+                    ratio = (indexTip - wrist).magnitude / toKnuckle;
+                    ratioKnown = true;
+                }
             }
             return true;
         }
@@ -212,12 +222,10 @@ namespace GuitarAR
             GUI.depth = -10;
             float size = Screen.width * 0.04f;
             var color = GUI.color;
-            foreach (var hand in m_Hands)
+            if (m_HasTip)
             {
-                if (!hand.Valid)
-                    continue;
-                GUI.color = hand.IndexRaised ? Color.green : Color.red;
-                GUI.DrawTexture(new Rect(hand.Tip.x - size * 0.5f, Screen.height - hand.Tip.y - size * 0.5f, size, size), m_Dot);
+                GUI.color = m_Raised ? Color.green : Color.red;
+                GUI.DrawTexture(new Rect(m_Tip.x - size * 0.5f, Screen.height - m_Tip.y - size * 0.5f, size, size), m_Dot);
             }
             GUI.color = color;
         }
@@ -239,7 +247,7 @@ namespace GuitarAR
         static extern void GuitarHands_Process(System.IntPtr nativeSession, float viewWidth, float viewHeight, int interfaceOrientation);
 
         [DllImport("__Internal")]
-        static extern int GuitarHands_Get([Out] float[] points, int maxHands, out double timestamp);
+        static extern int GuitarHands_Get([Out] float[] points, [Out] int[] chirality, int maxHands, out double timestamp);
 #endif
     }
 }

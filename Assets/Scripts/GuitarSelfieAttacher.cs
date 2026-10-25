@@ -21,7 +21,7 @@ namespace GuitarAR
         const float k_GuitarLength = 1.05f;
 
         [Tooltip("How much of the screen width the guitar spans.")]
-        [SerializeField] float m_ScreenWidthFraction = 0.75f;
+        [SerializeField] float m_ScreenWidthFraction = 0.9f;
 
         float m_FitScale = 1f;
 
