@@ -106,11 +106,11 @@ namespace GuitarAR
         /// seconds (so a strum rolls across the strings instead of hitting them all at once).
         /// A string that's plucked again stops ringing first, like a real one.
         /// </summary>
-        public void Pluck(int stringIndex, int midiNote, float volume, float delay = 0f)
+        public void Pluck(int stringIndex, int midiNote, float volume, float delay = 0f, bool muted = false)
         {
             var voice = m_Voices[stringIndex];
             voice.Stop();
-            voice.clip = GuitarSynth.Note(midiNote);
+            voice.clip = GuitarSynth.Note(midiNote, muted);
             voice.volume = volume;
             if (delay > 0f)
                 voice.PlayScheduled(AudioSettings.dspTime + delay);

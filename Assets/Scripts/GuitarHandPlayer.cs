@@ -32,6 +32,36 @@ namespace GuitarAR
         const float k_AssistStrumSpeed = 0.6f;  // With strum help on, passes at least this fast are strums, slower ones plucks.
         const float k_AssistMargin = 1.5f;      // With strum help on, the strum zone reaches this many string gaps past the outer strings.
         const string k_AssistKey = "GuitarAR.StrumAssist";
+        const string k_PatternKey = "GuitarAR.StrumPattern";
+        const float k_PatternRestart = 1.5f;    // Seconds without a strike after which a strumming pattern starts over.
+
+        enum Stroke { Bass, Down, Up, Mute }
+
+        struct Pattern
+        {
+            public string Name;
+            public Stroke[] Strokes;
+
+            public Pattern(string name, params Stroke[] strokes)
+            {
+                Name = name;
+                Strokes = strokes;
+            }
+        }
+
+        // Each strike plays the next stroke of the chosen pattern. Index 0 plays what the hand does.
+        static readonly Pattern[] k_Patterns =
+        {
+            new Pattern("Свободный"),
+            new Pattern("Шестёрка", Stroke.Bass, Stroke.Down, Stroke.Up, Stroke.Up, Stroke.Down, Stroke.Up),
+            new Pattern("Восьмёрка", Stroke.Down, Stroke.Mute, Stroke.Up, Stroke.Up, Stroke.Mute, Stroke.Up, Stroke.Down, Stroke.Up),
+        };
+
+        static int s_Pattern;
+        static Rect s_PatternRect;
+        int m_PatternStep;
+        string[] m_PatternLabels;
+        GUIStyle m_PatternStyle;
 
         static string s_Diagnostic = "рука: -";
         static Rect s_AssistRect;
@@ -60,7 +90,7 @@ namespace GuitarAR
         public static bool IsOverButton(Vector2 screenPosition)
         {
             var guiPoint = new Vector2(screenPosition.x, Screen.height - screenPosition.y);
-            return s_AssistRect.Contains(guiPoint);
+            return s_AssistRect.Contains(guiPoint) || s_PatternRect.Contains(guiPoint);
         }
 
         void Awake()
@@ -68,6 +98,7 @@ namespace GuitarAR
             try
             {
                 s_Assist = PlayerPrefs.GetInt(k_AssistKey, 1) != 0;
+                s_Pattern = Mathf.Clamp(PlayerPrefs.GetInt(k_PatternKey, 0), 0, k_Patterns.Length - 1);
             }
             catch (System.Exception)
             {
@@ -292,9 +323,39 @@ namespace GuitarAR
             float cooldown = down == m_LastStrumDown ? k_SameStrumCooldown : k_OtherStrumCooldown;
             if (Time.time - m_LastStrumTime < cooldown)
                 return;
+            float sinceLast = Time.time - m_LastStrumTime;
             m_LastStrumTime = Time.time;
             m_LastStrumDown = down;
-            GuitarStrummer.Strum(guitar, down, volume);
+
+            var strokes = k_Patterns[s_Pattern].Strokes;
+            if (strokes.Length == 0)
+            {
+                GuitarStrummer.Strum(guitar, down, volume);
+                return;
+            }
+
+            // The player's strike sets the timing; the pattern decides how it sounds.
+            if (sinceLast > k_PatternRestart || m_PatternStep >= strokes.Length)
+                m_PatternStep = 0;
+            switch (strokes[m_PatternStep])
+            {
+                case Stroke.Bass: GuitarStrummer.Bass(guitar, volume); break;
+                case Stroke.Down: GuitarStrummer.Strum(guitar, true, volume); break;
+                case Stroke.Up: GuitarStrummer.Strum(guitar, false, volume); break;
+                case Stroke.Mute: GuitarStrummer.MutedStrum(guitar, volume); break;
+            }
+            m_PatternStep = (m_PatternStep + 1) % strokes.Length;
+        }
+
+        static string Symbol(Stroke stroke)
+        {
+            switch (stroke)
+            {
+                case Stroke.Bass: return "Б";
+                case Stroke.Down: return "↓";
+                case Stroke.Up: return "↑";
+                default: return "✕";
+            }
         }
 
         bool TryRead(int hand, out Vector2 indexTip, out float ratio, out bool ratioKnown)
@@ -357,11 +418,13 @@ namespace GuitarAR
             if (!AnyPlayable())
             {
                 s_AssistRect = default;
+                s_PatternRect = default;
                 return;
             }
             if (m_ButtonStyle == null)
                 m_ButtonStyle = new GUIStyle(GUI.skin.button) { fontSize = Mathf.RoundToInt(Screen.height * 0.016f), fontStyle = FontStyle.Bold };
-            s_AssistRect = new Rect(Screen.width * 0.05f, Screen.height * 0.345f, Screen.width * 0.5f, Screen.height * 0.045f);
+            s_AssistRect = new Rect(Screen.width * 0.05f, Screen.height * 0.345f, Screen.width * 0.9f, Screen.height * 0.045f);
+            DrawPatterns();
             bool assist = GUI.Toggle(s_AssistRect, s_Assist, s_Assist ? "Помощь с боем: вкл" : "Помощь с боем: выкл", m_ButtonStyle);
             if (assist != s_Assist)
             {
@@ -374,6 +437,53 @@ namespace GuitarAR
                 {
                 }
             }
+        }
+
+        void DrawPatterns()
+        {
+            if (m_PatternLabels == null)
+            {
+                m_PatternLabels = new string[k_Patterns.Length];
+                for (int i = 0; i < k_Patterns.Length; i++)
+                    m_PatternLabels[i] = k_Patterns[i].Name;
+                m_PatternStyle = new GUIStyle(GUI.skin.label)
+                {
+                    fontSize = Mathf.RoundToInt(Screen.height * 0.026f),
+                    alignment = TextAnchor.MiddleCenter,
+                    richText = true,
+                    normal = { textColor = Color.white },
+                };
+            }
+
+            s_PatternRect = new Rect(Screen.width * 0.05f, Screen.height * 0.395f, Screen.width * 0.9f, Screen.height * 0.045f);
+            int selected = GUI.Toolbar(s_PatternRect, s_Pattern, m_PatternLabels, m_ButtonStyle);
+            if (selected != s_Pattern)
+            {
+                s_Pattern = selected;
+                m_PatternStep = 0;
+                try
+                {
+                    PlayerPrefs.SetInt(k_PatternKey, selected);
+                }
+                catch (System.Exception)
+                {
+                }
+            }
+
+            // The pattern's strokes, the next one highlighted.
+            var strokes = k_Patterns[s_Pattern].Strokes;
+            if (strokes.Length == 0)
+                return;
+            bool restarts = Time.time - m_LastStrumTime > k_PatternRestart;
+            var text = new System.Text.StringBuilder();
+            for (int i = 0; i < strokes.Length; i++)
+            {
+                bool next = restarts ? i == 0 : i == m_PatternStep;
+                text.Append(next ? $"<color=#ffd400><b>{Symbol(strokes[i])}</b></color>" : Symbol(strokes[i]));
+                if (i < strokes.Length - 1)
+                    text.Append("  ");
+            }
+            GUI.Label(new Rect(Screen.width * 0.05f, Screen.height * 0.445f, Screen.width * 0.9f, Screen.height * 0.04f), text.ToString(), m_PatternStyle);
         }
 
         static int InterfaceOrientation()

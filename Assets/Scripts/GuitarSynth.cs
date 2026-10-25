@@ -15,6 +15,8 @@ namespace GuitarAR
         public static readonly int[] OpenStrings = { 40, 45, 50, 55, 59, 64 };
 
         const float k_Duration = 3.5f;
+        const float k_MutedDuration = 0.15f;
+        const float k_MutedDecaySeconds = 0.07f;
         const float k_FadeOut = 0.3f;
         const float k_LowDecaySeconds = 5f;   // Ring time (to -60 dB) of the lowest string.
         const float k_HighDecaySeconds = 2.2f; // ...and of notes two octaves up.
@@ -28,22 +30,28 @@ namespace GuitarAR
 
         public static float Frequency(int midiNote) => 440f * Mathf.Pow(2f, (midiNote - 69) / 12f);
 
-        public static AudioClip Note(int midiNote)
+        /// <summary>
+        /// A plucked note. Muted, it's the short percussive "chuck" of a string damped by the palm
+        /// right as it's hit.
+        /// </summary>
+        public static AudioClip Note(int midiNote, bool muted = false)
         {
-            if (s_Clips.TryGetValue(midiNote, out var clip) && clip != null)
+            int key = muted ? -midiNote : midiNote;
+            if (s_Clips.TryGetValue(key, out var clip) && clip != null)
                 return clip;
 
             int sampleRate = AudioSettings.outputSampleRate > 0 ? AudioSettings.outputSampleRate : 48000;
-            var samples = Pluck(Frequency(midiNote), sampleRate, midiNote);
-            clip = AudioClip.Create($"Note{midiNote}", samples.Length, 1, sampleRate, false);
+            var samples = Pluck(Frequency(midiNote), sampleRate, midiNote, muted);
+            clip = AudioClip.Create(muted ? $"Muted{midiNote}" : $"Note{midiNote}", samples.Length, 1, sampleRate, false);
             clip.SetData(samples, 0);
-            s_Clips[midiNote] = clip;
+            s_Clips[key] = clip;
             return clip;
         }
 
-        static float[] Pluck(float frequency, int sampleRate, int seed)
+        static float[] Pluck(float frequency, int sampleRate, int seed, bool muted)
         {
-            var output = new float[Mathf.CeilToInt(k_Duration * sampleRate)];
+            float duration = muted ? k_MutedDuration : k_Duration;
+            var output = new float[Mathf.CeilToInt(duration * sampleRate)];
 
             // The two-point average in the loop delays by half a sample; a first-order all-pass
             // supplies the rest of the fractional period so high notes stay in tune.
@@ -54,7 +62,7 @@ namespace GuitarAR
 
             // Higher notes die away faster, like real strings.
             float octavesUp = Mathf.Log(frequency / Frequency(OpenStrings[0]), 2f);
-            float decaySeconds = Mathf.Lerp(k_LowDecaySeconds, k_HighDecaySeconds, Mathf.Clamp01(octavesUp / 2f));
+            float decaySeconds = muted ? k_MutedDecaySeconds : Mathf.Lerp(k_LowDecaySeconds, k_HighDecaySeconds, Mathf.Clamp01(octavesUp / 2f));
             float loopGain = Mathf.Pow(10f, -3f / (decaySeconds * frequency));
             loopGain = Mathf.Min(0.9999f, loopGain / Mathf.Cos(Mathf.PI * frequency / sampleRate));
 
@@ -98,7 +106,7 @@ namespace GuitarAR
                 peak = Mathf.Max(peak, Mathf.Abs(dcOut));
             }
 
-            int fadeSamples = Mathf.RoundToInt(k_FadeOut * sampleRate);
+            int fadeSamples = Mathf.RoundToInt(Mathf.Min(k_FadeOut, duration * 0.5f) * sampleRate);
             float gain = k_Peak / peak;
             for (int n = 0; n < output.Length; n++)
             {

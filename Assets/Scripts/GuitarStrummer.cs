@@ -308,6 +308,31 @@ namespace GuitarAR
             }
         }
 
+        /// <summary>Plays the chord's bass: its lowest sounding string.</summary>
+        public static void Bass(GuitarStrings guitar, float volume)
+        {
+            if (s_Instance == null)
+                return;
+            var frets = k_Chords[s_Instance.m_Chord].Frets;
+            for (int i = 0; i < frets.Length; i++)
+            {
+                if (frets[i] >= 0)
+                {
+                    s_Instance.Play(guitar, i, volume, 0f);
+                    return;
+                }
+            }
+        }
+
+        /// <summary>A down strum damped by the palm (глушение): a short percussive chuck.</summary>
+        public static void MutedStrum(GuitarStrings guitar, float volume)
+        {
+            if (s_Instance == null)
+                return;
+            for (int i = 0; i < GuitarStrings.StringCount; i++)
+                s_Instance.Play(guitar, i, volume * 0.7f, i * k_StrumRoll * 0.5f, true);
+        }
+
         /// <summary>Plucks one string of the chosen chord.</summary>
         public static void PluckString(GuitarStrings guitar, int stringIndex, float volume)
         {
@@ -315,7 +340,7 @@ namespace GuitarAR
                 s_Instance.Play(guitar, stringIndex, volume, 0f);
         }
 
-        void Play(GuitarStrings guitar, int stringIndex, float volume, float delay)
+        void Play(GuitarStrings guitar, int stringIndex, float volume, float delay, bool muted = false)
         {
             int fret = k_Chords[m_Chord].Frets[stringIndex];
             if (fret < 0)
@@ -326,7 +351,7 @@ namespace GuitarAR
                 return;
             m_LastPluck[key] = Time.time;
 
-            guitar.Pluck(stringIndex, GuitarSynth.OpenStrings[stringIndex] + fret, volume, delay);
+            guitar.Pluck(stringIndex, GuitarSynth.OpenStrings[stringIndex] + fret, volume, delay, muted);
             m_PluckCount++;
             if (!m_HasPlayed)
                 Debug.Log($"[GuitarAR] First pluck: string {stringIndex + 1}, volume {volume:0.00}");
@@ -339,7 +364,10 @@ namespace GuitarAR
             for (int i = 0; i < frets.Length; i++)
             {
                 if (frets[i] >= 0)
+                {
                     GuitarSynth.Note(GuitarSynth.OpenStrings[i] + frets[i]);
+                    GuitarSynth.Note(GuitarSynth.OpenStrings[i] + frets[i], true);
+                }
             }
         }
 
