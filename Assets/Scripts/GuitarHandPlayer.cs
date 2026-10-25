@@ -37,39 +37,86 @@ namespace GuitarAR
 
         enum Stroke { Bass, Down, Up, Mute }
 
+        /// <summary>
+        /// A strumming pattern as written on a rhythm grid: each stroke sits on a slot of the bar.
+        /// Strokes on neighbouring slots come too quickly to hit one by one, so they form a group,
+        /// and one strike plays the whole group in time.
+        /// </summary>
         struct Pattern
         {
             public string Name;
             public Stroke[] Strokes;
+            public int[] Slots;        // The slot of each stroke.
+            public int Length;         // Slots in a bar.
+            public int SlotsPerBeat;
 
-            public Pattern(string name, params Stroke[] strokes)
+            public Pattern(string name, int length, int slotsPerBeat, string grid)
             {
                 Name = name;
-                Strokes = strokes;
+                Length = length;
+                SlotsPerBeat = slotsPerBeat;
+                var strokes = new System.Collections.Generic.List<Stroke>();
+                var slots = new System.Collections.Generic.List<int>();
+                for (int slot = 0; slot < grid.Length; slot++)
+                {
+                    switch (grid[slot])
+                    {
+                        case 'D': strokes.Add(Stroke.Down); slots.Add(slot); break;
+                        case 'U': strokes.Add(Stroke.Up); slots.Add(slot); break;
+                        case 'X': strokes.Add(Stroke.Mute); slots.Add(slot); break;
+                        case 'B': strokes.Add(Stroke.Bass); slots.Add(slot); break;
+                    }
+                }
+                Strokes = strokes.ToArray();
+                Slots = slots.ToArray();
+            }
+
+            /// <summary>The stroke after the group that starts at stroke index start.</summary>
+            public int GroupEnd(int start)
+            {
+                int end = start + 1;
+                while (end < Strokes.Length && Slots[end] == Slots[end - 1] + 1)
+                    end++;
+                return end;
             }
         }
 
-        // Each strike plays the next stroke of the chosen pattern. Index 0 plays what the hand does.
+        // D = down, U = up, X = muted down (глушение), B = bass, . = rest; one character per slot.
         static readonly Pattern[] k_Patterns =
         {
-            new Pattern("Свободный"),
-            // Вниз, вниз с глушением, вверх, вверх, вниз с глушением, вверх.
-            new Pattern("Шестёрка", Stroke.Down, Stroke.Mute, Stroke.Up, Stroke.Up, Stroke.Mute, Stroke.Up),
-            // Вниз, вниз с глушением, вверх, вверх, вверх, вниз, вниз с глушением, вверх.
-            new Pattern("Восьмёрка", Stroke.Down, Stroke.Mute, Stroke.Up, Stroke.Up, Stroke.Up, Stroke.Down, Stroke.Mute, Stroke.Up),
+            // Plays whatever the hand does.
+            new Pattern("Свободный", 1, 1, ""),
+            // Eighths, «раз-и-два-и-три-и-четыре-и»: ↓ _ ✕ ↑ _ ↑ ✕ ↑. Strikes: ↓, ✕↑, ↑✕↑.
+            new Pattern("Шестёрка", 8, 2, "D.XU.UXU"),
+            // Triplets: ↓ _ ✕ | _ ↑ ↑ | _ ↑ ↓ | _ ✕ ↑. Strikes: ↓, ✕, ↑↑, ↑↓, ✕↑.
+            new Pattern("Восьмёрка", 12, 3, "D.X.UU.UD.XU"),
         };
 
-        // Rhythm help (part of strum help): learns the player's tempo from their strikes and, when a
-        // strike comes a little early, holds its sound back to the beat so the strumming sounds even.
+        // Rhythm: the player's tempo is learned from their strikes. With strum help on, a strike
+        // that comes a little early is held back to land on the beat.
         const int k_TempoSamples = 4;
-        const float k_MinBeat = 0.12f;         // Seconds; shortest and longest gap between strikes
-        const float k_MaxBeat = 1.0f;          // that count towards the tempo.
+        const float k_DefaultSlot = 0.15f;     // Seconds per slot until the player's tempo is known.
+        const float k_MinSlot = 0.07f;         // Shortest and longest slot that count towards the tempo.
+        const float k_MaxSlot = 0.5f;
         const float k_MaxRhythmDelay = 0.07f;  // Seconds; the most a strike is held back.
 
-        readonly float[] m_Beats = new float[k_TempoSamples];
-        int m_BeatCount;
-        float m_Beat;                           // The player's tempo: seconds between strikes, 0 while unknown.
+        readonly float[] m_SlotSamples = new float[k_TempoSamples];
+        int m_SlotSampleCount;
+        float m_Slot;                           // The player's tempo: seconds per slot, 0 while unknown.
         double m_LastSounded = double.NegativeInfinity;
+        double m_BarStart;
+        int m_PreviousSlot = -1;
+
+        // Later strokes of a group, waiting for their time.
+        struct PendingStroke
+        {
+            public double Time;
+            public GuitarStrings Guitar;
+            public Stroke Stroke;
+            public float Volume;
+        }
+
+        readonly System.Collections.Generic.List<PendingStroke> m_Pending = new System.Collections.Generic.List<PendingStroke>();
 
         static int s_Pattern;
         static Rect s_PatternRect;
@@ -122,6 +169,7 @@ namespace GuitarAR
 
         void Update()
         {
+            PlayPending();
 #if UNITY_IOS && !UNITY_EDITOR
             if (!AnyPlayable())
             {
@@ -340,52 +388,105 @@ namespace GuitarAR
             float sinceLast = Time.time - m_LastStrumTime;
             m_LastStrumTime = Time.time;
             m_LastStrumDown = down;
-            float delay = s_Assist ? RhythmDelay(sinceLast) : 0f;
 
-            var strokes = k_Patterns[s_Pattern].Strokes;
-            if (strokes.Length == 0)
+            var pattern = k_Patterns[s_Pattern];
+            if (pattern.Strokes.Length == 0)
             {
-                GuitarStrummer.Strum(guitar, down, volume, delay);
+                float freeDelay = Rhythm(sinceLast, m_PreviousSlot < 0 ? 0 : 1);
+                m_PreviousSlot = 0;
+                GuitarStrummer.Strum(guitar, down, volume, freeDelay);
                 return;
             }
 
-            // The player's strike sets the timing; the pattern decides how it sounds.
-            if (sinceLast > k_PatternRestart || m_PatternStep >= strokes.Length)
+            // The player's strike sets the timing; the pattern decides how it sounds. A strike plays
+            // a whole group of quick strokes, spaced at the player's tempo.
+            if (sinceLast > k_PatternRestart || m_PatternStep >= pattern.Strokes.Length)
+            {
                 m_PatternStep = 0;
-            switch (strokes[m_PatternStep])
+                m_PreviousSlot = -1;
+            }
+            int slot = pattern.Slots[m_PatternStep];
+            int gap = m_PreviousSlot < 0 ? 0 : (slot - m_PreviousSlot + pattern.Length) % pattern.Length;
+            if (gap == 0 && m_PreviousSlot >= 0)
+                gap = pattern.Length;
+            float delay = Rhythm(sinceLast, gap);
+            if (m_PatternStep == 0)
+                m_BarStart = Time.timeAsDouble + delay;
+
+            float slotSeconds = m_Slot > 0f ? m_Slot : k_DefaultSlot;
+            int end = pattern.GroupEnd(m_PatternStep);
+            Play(guitar, pattern.Strokes[m_PatternStep], volume, delay);
+            for (int i = m_PatternStep + 1; i < end; i++)
+            {
+                m_Pending.Add(new PendingStroke
+                {
+                    Time = Time.timeAsDouble + delay + (pattern.Slots[i] - slot) * slotSeconds,
+                    Guitar = guitar,
+                    Stroke = pattern.Strokes[i],
+                    Volume = volume,
+                });
+            }
+
+            m_PreviousSlot = slot;
+            m_PatternStep = end % pattern.Strokes.Length;
+        }
+
+        static void Play(GuitarStrings guitar, Stroke stroke, float volume, float delay)
+        {
+            switch (stroke)
             {
                 case Stroke.Bass: GuitarStrummer.Bass(guitar, volume, delay); break;
                 case Stroke.Down: GuitarStrummer.Strum(guitar, true, volume, delay); break;
-                case Stroke.Up: GuitarStrummer.Strum(guitar, false, volume, delay); break;
+                case Stroke.Up: GuitarStrummer.Strum(guitar, false, volume * 0.9f, delay); break;
                 case Stroke.Mute: GuitarStrummer.MutedStrum(guitar, volume, delay); break;
             }
-            m_PatternStep = (m_PatternStep + 1) % strokes.Length;
+        }
+
+        void PlayPending()
+        {
+            double now = Time.timeAsDouble;
+            for (int i = 0; i < m_Pending.Count; i++)
+            {
+                var pending = m_Pending[i];
+                if (pending.Time > now)
+                    continue;
+                if (pending.Guitar != null && pending.Guitar.IsPlayable)
+                    Play(pending.Guitar, pending.Stroke, pending.Volume, 0f);
+                m_Pending.RemoveAt(i);
+                i--;
+            }
         }
 
         /// <summary>
-        /// How long to hold back a strike so it lands on the player's own beat, and learns the beat.
+        /// Learns the player's tempo from a strike that comes gapSlots after the previous one (0 if
+        /// unknown) and, with strum help on, says how long to hold it back to land on the beat.
         /// Only early strikes are nudged (a sound can't be played before the strike), and only a little.
         /// </summary>
-        float RhythmDelay(float sinceLastStrike)
+        float Rhythm(float sinceLastStrike, int gapSlots)
         {
             double now = Time.timeAsDouble;
             if (sinceLastStrike > k_PatternRestart)
             {
-                m_BeatCount = 0;
-                m_Beat = 0f;
+                m_SlotSampleCount = 0;
+                m_Slot = 0f;
             }
-            else if (sinceLastStrike >= k_MinBeat && sinceLastStrike <= k_MaxBeat)
+            else if (gapSlots > 0)
             {
-                m_Beats[m_BeatCount % k_TempoSamples] = sinceLastStrike;
-                m_BeatCount++;
-                m_Beat = Median();
+                float slot = sinceLastStrike / gapSlots;
+                if (slot >= k_MinSlot && slot <= k_MaxSlot)
+                {
+                    m_SlotSamples[m_SlotSampleCount % k_TempoSamples] = slot;
+                    m_SlotSampleCount++;
+                    m_Slot = Median();
+                }
             }
 
             float delay = 0f;
-            if (m_Beat > 0f && m_BeatCount >= 2)
+            if (s_Assist && gapSlots > 0 && m_Slot > 0f && m_SlotSampleCount >= 2)
             {
-                float early = (float)(m_LastSounded + m_Beat - now);
-                if (early > 0f && early <= Mathf.Min(k_MaxRhythmDelay, m_Beat * 0.25f))
+                float expected = m_Slot * gapSlots;
+                float early = (float)(m_LastSounded + expected - now);
+                if (early > 0f && early <= Mathf.Min(k_MaxRhythmDelay, expected * 0.25f))
                     delay = early;
             }
             m_LastSounded = now + delay;
@@ -394,9 +495,9 @@ namespace GuitarAR
 
         float Median()
         {
-            int n = Mathf.Min(m_BeatCount, k_TempoSamples);
+            int n = Mathf.Min(m_SlotSampleCount, k_TempoSamples);
             var sorted = new float[n];
-            System.Array.Copy(m_Beats, sorted, n);
+            System.Array.Copy(m_SlotSamples, sorted, n);
             System.Array.Sort(sorted);
             return n % 2 == 1 ? sorted[n / 2] : 0.5f * (sorted[n / 2 - 1] + sorted[n / 2]);
         }
@@ -515,6 +616,8 @@ namespace GuitarAR
             {
                 s_Pattern = selected;
                 m_PatternStep = 0;
+                m_PreviousSlot = -1;
+                m_Pending.Clear();
                 try
                 {
                     PlayerPrefs.SetInt(k_PatternKey, selected);
@@ -524,26 +627,33 @@ namespace GuitarAR
                 }
             }
 
-            // The pattern's strokes, the next one highlighted.
-            var strokes = k_Patterns[s_Pattern].Strokes;
+            // The pattern's strokes, grouped as they're struck, the next strike highlighted.
+            var pattern = k_Patterns[s_Pattern];
+            var strokes = pattern.Strokes;
             bool restarts = Time.time - m_LastStrumTime > k_PatternRestart;
+            int nextGroup = restarts ? 0 : m_PatternStep;
             var text = new System.Text.StringBuilder();
             if (strokes.Length == 0)
                 text.Append("бей как хочешь");
-            for (int i = 0; i < strokes.Length; i++)
+            for (int start = 0; start < strokes.Length;)
             {
-                bool next = restarts ? i == 0 : i == m_PatternStep;
-                text.Append(next ? $"<color=#ffd400><b>{Symbol(strokes[i])}</b></color>" : Symbol(strokes[i]));
-                if (i < strokes.Length - 1)
-                    text.Append("  ");
+                int end = pattern.GroupEnd(start);
+                var group = new System.Text.StringBuilder();
+                for (int i = start; i < end; i++)
+                    group.Append(Symbol(strokes[i]));
+                text.Append(start == nextGroup ? $"<color=#ffd400><b>{group}</b></color>" : group.ToString());
+                if (end < strokes.Length)
+                    text.Append("   ");
+                start = end;
             }
-            if (s_Assist && m_Beat > 0f && !restarts)
+            if (s_Assist && m_Slot > 0f && !restarts && strokes.Length > 0)
             {
-                // A light that flashes on the player's beat, to keep time by.
-                float phase = (float)((Time.timeAsDouble - m_LastSounded) / m_Beat);
+                // A light that flashes on the beat, to keep time by.
+                float beat = m_Slot * pattern.SlotsPerBeat;
+                float phase = (float)((Time.timeAsDouble - m_BarStart) / beat);
                 bool onBeat = phase - Mathf.Floor(phase) < 0.2f;
                 text.Append(onBeat ? "   <color=#ffd400>●</color>" : "   <color=#ffffff55>●</color>");
-                text.Append($"  <size={Mathf.RoundToInt(Screen.height * 0.016f)}>{Mathf.RoundToInt(60f / m_Beat)} уд/мин</size>");
+                text.Append($"  <size={Mathf.RoundToInt(Screen.height * 0.016f)}>{Mathf.RoundToInt(60f / beat)} уд/мин</size>");
             }
             GUI.Label(new Rect(Screen.width * 0.05f, Screen.height * 0.445f, Screen.width * 0.9f, Screen.height * 0.04f), text.ToString(), m_PatternStyle);
         }
