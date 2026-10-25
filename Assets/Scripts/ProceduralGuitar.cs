@@ -15,6 +15,9 @@ namespace GuitarAR
         [SerializeField] Color m_FretboardColor = new Color(0.16f, 0.10f, 0.06f);
         [SerializeField] Color m_MetalColor = new Color(0.85f, 0.85f, 0.80f);
 
+        [Tooltip("Overall size. 1 is a full-size acoustic, which looks oversized on a phone screen.")]
+        [SerializeField] float m_Size = 0.7f;
+
         static Material s_PartMaterial;
 
         const int k_StringCount = 6;
@@ -29,7 +32,10 @@ namespace GuitarAR
         void Awake()
         {
             if (transform.childCount == 0)
+            {
                 Build();
+                transform.localScale = Vector3.one * m_Size;
+            }
         }
 
         public void Build()

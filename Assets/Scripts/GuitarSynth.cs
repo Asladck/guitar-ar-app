@@ -23,6 +23,9 @@ namespace GuitarAR
 
         static readonly Dictionary<int, AudioClip> s_Clips = new Dictionary<int, AudioClip>();
 
+        /// <summary>Forget the made clips, after Unity's audio output was restarted.</summary>
+        public static void ClearCache() => s_Clips.Clear();
+
         public static float Frequency(int midiNote) => 440f * Mathf.Pow(2f, (midiNote - 69) / 12f);
 
         public static AudioClip Note(int midiNote)

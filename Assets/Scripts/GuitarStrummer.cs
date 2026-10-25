@@ -99,11 +99,25 @@ namespace GuitarAR
                 m_ChordLabels[i] = k_Chords[i].Name;
         }
 
+        void OnEnable() => AudioSettings.OnAudioConfigurationChanged += OnAudioConfigurationChanged;
+
+        void OnDisable() => AudioSettings.OnAudioConfigurationChanged -= OnAudioConfigurationChanged;
+
         void Start()
         {
             PlayEvenWhenSilent();
             // Make the first chord's notes now so the first strum doesn't hitch.
             PrepareChord(m_Chord);
+            var config = AudioSettings.GetConfiguration();
+            Debug.Log($"[GuitarAR] Audio ready: {config.sampleRate} Hz, {config.speakerMode}, buffer {config.dspBufferSize}");
+        }
+
+        void OnAudioConfigurationChanged(bool deviceWasChanged)
+        {
+            // Clips made for the old output may be gone or at the wrong sample rate.
+            GuitarSynth.ClearCache();
+            PrepareChord(m_Chord);
+            Debug.Log($"[GuitarAR] Audio configuration changed (device changed: {deviceWasChanged})");
         }
 
         void OnApplicationFocus(bool hasFocus)
@@ -245,6 +259,8 @@ namespace GuitarAR
             m_LastPluck[key] = Time.time;
 
             guitar.Pluck(stringIndex, GuitarSynth.OpenStrings[stringIndex] + fret, volume, delay);
+            if (!m_HasPlayed)
+                Debug.Log($"[GuitarAR] First pluck: string {stringIndex + 1}, volume {volume:0.00}");
             m_HasPlayed = true;
         }
 
@@ -352,7 +368,7 @@ namespace GuitarAR
 
 #if UNITY_IOS && !UNITY_EDITOR
         [DllImport("__Internal")]
-        static extern void GuitarAR_PlayEvenWhenSilent();
+        static extern int GuitarAR_PlayEvenWhenSilent();
 #endif
 
         /// <summary>
@@ -362,7 +378,9 @@ namespace GuitarAR
         static void PlayEvenWhenSilent()
         {
 #if UNITY_IOS && !UNITY_EDITOR
-            GuitarAR_PlayEvenWhenSilent();
+            // Unity's output stops when the session's category changes under it; restart it.
+            if (GuitarAR_PlayEvenWhenSilent() != 0)
+                AudioSettings.Reset(AudioSettings.GetConfiguration());
 #endif
         }
     }

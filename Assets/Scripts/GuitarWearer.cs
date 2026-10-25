@@ -108,7 +108,9 @@ namespace GuitarAR
 
             // Guitar space: +Y is the face, +Z runs up the neck, the origin is the back of the lower bout.
             rotation = Quaternion.LookRotation(neck, forward);
-            position = belly + right * k_RightOffset + forward * k_ForwardOffset - neck * k_BodyCenterZ;
+            // A smaller guitar's body center is nearer its pivot, so scale that offset with it.
+            float size = m_Guitar != null ? Mathf.Abs(m_BaseScale.z) : 1f;
+            position = belly + right * k_RightOffset + forward * k_ForwardOffset - neck * (k_BodyCenterZ * size);
             return true;
         }
 
