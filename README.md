@@ -21,7 +21,9 @@ Built with Unity 6 LTS, Universal Render Pipeline and AR Foundation (ARCore on A
 | `Assets/Scripts/GuitarSynth.cs` | Synthesizes plucked-string notes (Karplus-Strong) for notes without a recording |
 | `Tools/make-guitar-samples.py` | Downloads the guitar recordings and cuts them into the notes in `Assets/Resources/GuitarSamples` |
 | `Assets/Plugins/iOS/GuitarAudioSession.mm` | Lets the guitar sound even when the iPhone is in silent mode |
-| `Assets/Scripts/GuitarModeSwitcher.cs` | On-screen buttons switching between *on a person*, *selfie* and *on a surface* |
+| `Assets/Scripts/GuitarModeSwitcher.cs` | Switches between *on a person*, *selfie* and *on a surface* |
+| `Assets/Scripts/GuitarHud.cs` | The on-screen interface: chord, hand status, strumming pattern, settings, chord and mode buttons |
+| `Assets/Scripts/GuitarUI.cs` | The interface's look: rounded see-through panels, accent colour, sizes in points, safe area |
 | `Assets/Editor/GuitarARProjectSetup.cs` | **Guitar AR → Set Up Project** menu: URP + AR background, player settings, AR scene |
 | `.claude/skills/` | Unity's agent skills (`npx skills add Unity-Technologies/skills`) |
 
@@ -71,9 +73,11 @@ ARKit can't track bodies, track faces and detect planes in the same session, so 
 front of the camera. A quick sweep strums (down from the low E, or a lighter up strum), a slow pass
 plucks one string; with the finger down nothing plays. Your **left hand picks the chord** (button *Аккорд*): on the neck, put your fingertips where the
 chord's fingering goes (cyan dots show where); with gestures, hold up fingers (1 = Em, 2 = Am,
-3 = C, 4 = G, index + little = D, little = E); or use the chord buttons. **Strum help** (on by default, button on
-screen) makes any quick pass through a wide zone around the strings a full strum, so grazing a
-string on the way doesn't make stray notes.
+3 = C, 4 = G, index + little = D, little = E); or use the chord buttons. **Strum help** (on by
+default) makes any quick pass through a wide zone around the strings a full strum, so grazing a
+string on the way doesn't make stray notes. The settings button (top right) holds strum help, how
+the chord is picked and the diagnostics; the card under it picks the strumming pattern and shows
+the next strike and the beat.
 
 **Playing:** once the guitar is on screen, swipe across its strings to strum, or tap a string to
 pluck it. Pick a chord (Em, Am, C, G, D, E) with the buttons above the mode buttons. When the

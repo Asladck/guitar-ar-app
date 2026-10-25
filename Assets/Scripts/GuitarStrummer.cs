@@ -13,8 +13,8 @@ namespace GuitarAR
     /// Play the guitar on screen: swipe across the strings to strum, tap one to pluck it.
     /// Works with several fingers at once and with any visible <see cref="GuitarStrings"/>.
     /// When the strings are too small on screen to aim at (a guitar on someone across the
-    /// room), a tap strums all of them. Draws a row of chord buttons; the chosen chord is what
-    /// the strings play.
+    /// room), a tap strums all of them. The chosen chord (from the chord buttons or the left
+    /// hand) is what the strings play.
     /// </summary>
     public class GuitarStrummer : MonoBehaviour
     {
@@ -47,7 +47,6 @@ namespace GuitarAR
         const float k_AimableSpacing = 0.012f; // Below this string spacing (fraction of screen width), taps strum.
         const float k_TapReach = 0.045f;       // How close a tap must be to a string (fraction of screen width).
 
-        static Rect s_ChordRect;
         static string s_LastTapInfo = "-";
 
         // Temporary on-screen diagnostics while the strings don't respond on device.
@@ -55,7 +54,6 @@ namespace GuitarAR
         int m_TouchCount;
         int m_PluckCount;
         string m_LastError;
-        GUIStyle m_DiagnosticStyle;
         static GuitarStrummer s_Instance;
 
         readonly Dictionary<int, Vector2> m_LastPositions = new Dictionary<int, Vector2>();
@@ -67,11 +65,14 @@ namespace GuitarAR
 
         int m_Chord;
         bool m_HasPlayed;
-        string[] m_ChordLabels;
-        GUIStyle m_ButtonStyle;
 
         /// <summary>The chord the strings play, as an index into the chord buttons.</summary>
         public static int CurrentChord => s_Instance != null ? s_Instance.m_Chord : 0;
+
+        public static int ChordCount => k_Chords.Length;
+
+        /// <summary>When a string was last played (Time.time), to flash the chord on screen.</summary>
+        public static float LastPlayTime { get; private set; } = float.NegativeInfinity;
 
         public static string ChordName(int chord) => k_Chords[chord].Name;
 
@@ -86,13 +87,6 @@ namespace GuitarAR
 
         /// <summary>A hint for the player, or null once they've played.</summary>
         public static string Hint => s_Instance != null && !s_Instance.m_HasPlayed && AnyPlayable() ? "Подними указательный палец и проведи рукой по струнам" : null;
-
-        /// <summary>True if a screen position (pixels, origin bottom-left) is on the chord buttons.</summary>
-        public static bool IsOverButton(Vector2 screenPosition)
-        {
-            var guiPoint = new Vector2(screenPosition.x, Screen.height - screenPosition.y);
-            return s_ChordRect.Contains(guiPoint);
-        }
 
         /// <summary>True if a tap here would play the guitar, so it shouldn't also move it.</summary>
         public static bool IsOnStrings(Vector2 screenPosition)
@@ -116,15 +110,13 @@ namespace GuitarAR
                 var go = new GameObject("Guitar Strummer");
                 go.AddComponent<GuitarStrummer>();
                 go.AddComponent<GuitarHandPlayer>();
+                go.AddComponent<GuitarHud>();
             }
         }
 
         void Awake()
         {
             s_Instance = this;
-            m_ChordLabels = new string[k_Chords.Length];
-            for (int i = 0; i < k_Chords.Length; i++)
-                m_ChordLabels[i] = k_Chords[i].Name;
         }
 
         void OnEnable()
@@ -236,7 +228,7 @@ namespace GuitarAR
             {
                 m_LastPositions[id] = position;
                 // Touches that start on a button belong to the button.
-                if (IsOverButton(position) || GuitarModeSwitcher.IsOverButton(position) || GuitarHandPlayer.IsOverButton(position))
+                if (GuitarUI.IsOverUI(position))
                 {
                     m_IgnoredTouches.Add(id);
                     s_LastTapInfo = "на кнопках";
@@ -370,6 +362,7 @@ namespace GuitarAR
 
             guitar.Pluck(stringIndex, GuitarSynth.OpenStrings[stringIndex] + fret, volume, delay, muted);
             m_PluckCount++;
+            LastPlayTime = Time.time;
             if (!m_HasPlayed)
                 Debug.Log($"[GuitarAR] First pluck: string {stringIndex + 1}, volume {volume:0.00}");
             m_HasPlayed = true;
@@ -457,44 +450,11 @@ namespace GuitarAR
             return t >= 0f && t <= 1f && u >= 0f && u <= 1f;
         }
 
-        void OnGUI()
+        /// <summary>Technical details for the diagnostics card, which is shown from the settings.</summary>
+        public static string Diagnostics => s_Instance != null ? s_Instance.DiagnosticText() : "";
+
+        string DiagnosticText()
         {
-            DrawDiagnostics();
-            if (!AnyPlayable())
-            {
-                s_ChordRect = default;
-                return;
-            }
-
-            if (m_ButtonStyle == null)
-                m_ButtonStyle = new GUIStyle(GUI.skin.button) { fontSize = Mathf.RoundToInt(Screen.height * 0.02f), fontStyle = FontStyle.Bold };
-
-            // Just above the mode buttons.
-            float width = Screen.width * 0.9f;
-            float height = Screen.height * 0.055f;
-            float modeTop = Screen.height - Screen.height * 0.065f - Screen.height * 0.06f;
-            s_ChordRect = new Rect((Screen.width - width) * 0.5f, modeTop - height - Screen.height * 0.015f, width, height);
-
-            int selected = GUI.Toolbar(s_ChordRect, m_Chord, m_ChordLabels, m_ButtonStyle);
-            if (selected != m_Chord)
-            {
-                m_Chord = selected;
-                PrepareChord(m_Chord);
-            }
-        }
-
-        void DrawDiagnostics()
-        {
-            if (m_DiagnosticStyle == null)
-            {
-                m_DiagnosticStyle = new GUIStyle(GUI.skin.label)
-                {
-                    fontSize = Mathf.RoundToInt(Screen.height * 0.013f),
-                    wordWrap = true,
-                    normal = { textColor = Color.yellow },
-                };
-            }
-
             int playable = 0;
             foreach (var guitar in GuitarStrings.Active)
             {
@@ -507,13 +467,12 @@ namespace GuitarAR
             if (cam != null && playable > 0 && GuitarStrings.Active[0].TryGetScreenSegment(0, cam, out var a, out var b))
                 onScreen = $"{a:0} -> {b:0}";
 
-            string text = $"камера: {(m_HasCamera ? "да" : "НЕТ")} | гитар: {GuitarStrings.Active.Count}, играбельных: {playable}\n"
+            return $"камера: {(m_HasCamera ? "да" : "НЕТ")} | гитар: {GuitarStrings.Active.Count}, играбельных: {playable}\n"
                 + $"касаний: {m_TouchCount}, щипков: {m_PluckCount}, звук: {(GuitarSamples.Count > 0 ? $"записи {GuitarSamples.Count}" : "синтез")}, {AudioSettings.GetConfiguration().sampleRate} Гц, dsp {AudioSettings.dspTime:0.0}, звучит {GuitarStrings.PlayingVoices}\n"
                 + AudioSessionInfo() + "\n"
                 + $"струна 1 на экране: {onScreen}\nпоследнее касание: {s_LastTapInfo}"
                 + "\n" + GuitarHandPlayer.DiagnosticText
                 + (m_LastError != null ? "\nошибка: " + m_LastError : "");
-            GUI.Label(new Rect(Screen.width * 0.03f, Screen.height * 0.19f, Screen.width * 0.94f, Screen.height * 0.15f), text, m_DiagnosticStyle);
         }
 
 #if UNITY_IOS && !UNITY_EDITOR

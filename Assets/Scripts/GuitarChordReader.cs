@@ -43,7 +43,7 @@ namespace GuitarAR
             new[] { false, false, false, true },  // E: little finger
         };
 
-        static readonly string[] k_GestureHints = { "указательный", "2 пальца", "3 пальца", "4 пальца", "указательный + мизинец", "мизинец" };
+        static readonly string[] k_GestureHints = { "1 палец", "2 пальца", "3 пальца", "4 пальца", "указ.+миз.", "мизинец" };
 
         readonly Vector2[] m_Positions = new Vector2[FingerCount];   // (string, fret) of each fingertip on the neck.
         readonly bool[] m_OnNeck = new bool[FingerCount];
@@ -244,20 +244,9 @@ namespace GuitarAR
             return true;
         }
 
-        /// <summary>
-        /// Shows how to pick chords: on the neck, dots where the current chord's fingers go; with
-        /// gestures, which fingers to hold up for each chord.
-        /// </summary>
-        public void DrawGuide(Texture2D dot, GUIStyle labelStyle)
+        /// <summary>On the neck, dots where the current chord's fingers go.</summary>
+        public void DrawGuide()
         {
-            if (CurrentMode == Mode.Gestures)
-            {
-                var legend = new System.Text.StringBuilder();
-                for (int chord = 0; chord < k_Gestures.Length; chord++)
-                    legend.Append($"{GuitarStrummer.ChordName(chord)}: {k_GestureHints[chord]}   ");
-                GUI.Label(new Rect(Screen.width * 0.05f, Screen.height * 0.49f, Screen.width * 0.9f, Screen.height * 0.05f), legend.ToString(), labelStyle);
-                return;
-            }
             if (CurrentMode != Mode.Neck)
                 return;
             var guitar = PlayableGuitar();
@@ -265,17 +254,16 @@ namespace GuitarAR
             if (guitar == null || cam == null || !TryGetStrings(guitar, cam))
                 return;
 
-            float size = Screen.width * 0.022f;
-            var color = GUI.color;
-            GUI.color = new Color(0.2f, 0.9f, 1f, 0.9f);
+            float size = 13f * GuitarUI.Pt;
             foreach (var note in k_Shapes[GuitarStrummer.CurrentChord])
             {
                 // Fret n's space ends at fromNut = 1 - 2^(-n/12); fingers go just behind the wire.
                 float fromNut = 1f - Mathf.Pow(2f, -(note.y - 0.4f) / 12f);
                 var p = Vector2.Lerp(m_Bridges[note.x], m_Nuts[note.x], 1f - fromNut);
-                GUI.DrawTexture(new Rect(p.x - size * 0.5f, Screen.height - p.y - size * 0.5f, size, size), dot);
+                var center = new Vector2(p.x, Screen.height - p.y);
+                GuitarUI.Dot(center, size * 1.4f, new Color(0f, 0f, 0f, 0.45f));
+                GuitarUI.Dot(center, size, GuitarUI.Guide);
             }
-            GUI.color = color;
         }
 
         bool TryGetStrings(GuitarStrings guitar, Camera cam)

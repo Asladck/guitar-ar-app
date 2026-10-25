@@ -119,13 +119,9 @@ namespace GuitarAR
         readonly System.Collections.Generic.List<PendingStroke> m_Pending = new System.Collections.Generic.List<PendingStroke>();
 
         static int s_Pattern;
-        static Rect s_PatternRect;
         int m_PatternStep;
-        string[] m_PatternLabels;
-        GUIStyle m_PatternStyle;
 
         static string s_Diagnostic = "рука: -";
-        static Rect s_AssistRect;
         static bool s_Assist = true;
 
         readonly float[] m_Points = new float[k_MaxHands * k_JointCount * 3];
@@ -135,11 +131,6 @@ namespace GuitarAR
         ARCameraManager m_CameraManager;
         readonly GuitarChordReader m_ChordReader = new GuitarChordReader();
         const string k_ChordModeKey = "GuitarAR.ChordMode";
-        static readonly string[] k_ChordModeLabels = { "Аккорд: гриф", "Аккорд: жесты", "Аккорд: кнопки" };
-        static Rect s_ChordModeRect;
-        GUIStyle m_GuideStyle;
-        Texture2D m_Dot;
-        GUIStyle m_ButtonStyle;
 
         // The right hand's index fingertip, in screen pixels.
         bool m_HasTip;
@@ -149,14 +140,114 @@ namespace GuitarAR
         float m_LastStrumTime = float.NegativeInfinity;
         bool m_LastStrumDown;
 
+        public enum HandState { NotSeen, FingerDown, Ready }
+
         /// <summary>A line for the on-screen diagnostics.</summary>
         public static string DiagnosticText => s_Diagnostic;
 
-        /// <summary>True if a screen position (pixels, origin bottom-left) is on the strum help button.</summary>
-        public static bool IsOverButton(Vector2 screenPosition)
+        public static int PatternCount => k_Patterns.Length;
+
+        public static string PatternName(int pattern) => k_Patterns[pattern].Name;
+
+        /// <summary>Strum help: quick passes through a wide zone strum the whole chord.</summary>
+        public static bool StrumAssist
         {
-            var guiPoint = new Vector2(screenPosition.x, Screen.height - screenPosition.y);
-            return s_AssistRect.Contains(guiPoint) || s_PatternRect.Contains(guiPoint) || s_ChordModeRect.Contains(guiPoint);
+            get => s_Assist;
+            set
+            {
+                s_Assist = value;
+                Save(k_AssistKey, value ? 1 : 0);
+            }
+        }
+
+        /// <summary>The strumming pattern; choosing one starts it from its first stroke.</summary>
+        public int CurrentPattern
+        {
+            get => s_Pattern;
+            set
+            {
+                if (value == s_Pattern || value < 0 || value >= k_Patterns.Length)
+                    return;
+                s_Pattern = value;
+                m_PatternStep = 0;
+                m_PreviousSlot = -1;
+                m_Pending.Clear();
+                Save(k_PatternKey, value);
+            }
+        }
+
+        /// <summary>How the left hand picks the chord.</summary>
+        public GuitarChordReader.Mode ChordMode
+        {
+            get => m_ChordReader.CurrentMode;
+            set
+            {
+                m_ChordReader.CurrentMode = value;
+                Save(k_ChordModeKey, (int)value);
+            }
+        }
+
+        public GuitarChordReader ChordReader => m_ChordReader;
+
+        /// <summary>Whether the right hand is seen, and whether its index finger is up to play.</summary>
+        public HandState RightHand => !m_HasTip ? HandState.NotSeen : m_Raised ? HandState.Ready : HandState.FingerDown;
+
+        /// <summary>The right index fingertip in screen pixels (origin bottom left), while it's seen.</summary>
+        public Vector2 Fingertip => m_Tip;
+
+        /// <summary>
+        /// The pattern's strokes as symbols, one entry per group that a single strike plays, and
+        /// which group the next strike plays. No groups for free strumming.
+        /// </summary>
+        public int PatternGroups(System.Collections.Generic.List<string> groups)
+        {
+            groups.Clear();
+            var pattern = k_Patterns[s_Pattern];
+            for (int start = 0; start < pattern.Strokes.Length;)
+            {
+                int end = pattern.GroupEnd(start);
+                var group = new System.Text.StringBuilder();
+                for (int i = start; i < end; i++)
+                    group.Append(Symbol(pattern.Strokes[i]));
+                groups.Add(group.ToString());
+                start = end;
+            }
+
+            // Which group the step is at, counted in groups.
+            bool restarts = Time.time - m_LastStrumTime > k_PatternRestart;
+            int next = 0;
+            for (int start = 0; !restarts && start < m_PatternStep && start < pattern.Strokes.Length; start = pattern.GroupEnd(start))
+                next++;
+            return next;
+        }
+
+        /// <summary>
+        /// The player's tempo in beats per minute, and whether this moment is on a beat. False
+        /// while the tempo isn't known or strum help is off.
+        /// </summary>
+        public bool TryGetBeat(out int beatsPerMinute, out bool onBeat)
+        {
+            beatsPerMinute = 0;
+            onBeat = false;
+            var pattern = k_Patterns[s_Pattern];
+            if (!s_Assist || m_Slot <= 0f || Time.time - m_LastStrumTime > k_PatternRestart || pattern.Strokes.Length == 0)
+                return false;
+            float beat = m_Slot * pattern.SlotsPerBeat;
+            float phase = (float)((Time.timeAsDouble - m_BarStart) / beat);
+            onBeat = phase - Mathf.Floor(phase) < 0.2f;
+            beatsPerMinute = Mathf.RoundToInt(60f / beat);
+            return true;
+        }
+
+        static void Save(string key, int value)
+        {
+            try
+            {
+                PlayerPrefs.SetInt(key, value);
+            }
+            catch (System.Exception)
+            {
+            }
         }
 
         void Awake()
@@ -539,7 +630,7 @@ namespace GuitarAR
                 case Stroke.Bass: return "Б";
                 case Stroke.Down: return "↓";
                 case Stroke.Up: return "↑";
-                default: return "✕";
+                default: return "×";
             }
         }
 
@@ -578,131 +669,6 @@ namespace GuitarAR
                     return true;
             }
             return false;
-        }
-
-        // Draws a dot on each index fingertip: green when it can play, red when the finger is down.
-        void OnGUI()
-        {
-            if (m_Dot == null)
-            {
-                m_Dot = new Texture2D(1, 1);
-                m_Dot.SetPixel(0, 0, Color.white);
-                m_Dot.Apply();
-            }
-
-            GUI.depth = -10;
-            float size = Screen.width * 0.04f;
-            var color = GUI.color;
-            if (m_HasTip)
-            {
-                GUI.color = m_Raised ? Color.green : Color.red;
-                GUI.DrawTexture(new Rect(m_Tip.x - size * 0.5f, Screen.height - m_Tip.y - size * 0.5f, size, size), m_Dot);
-            }
-            GUI.color = color;
-
-            if (!AnyPlayable())
-            {
-                s_AssistRect = default;
-                s_PatternRect = default;
-                s_ChordModeRect = default;
-                return;
-            }
-            if (m_ButtonStyle == null)
-                m_ButtonStyle = new GUIStyle(GUI.skin.button) { fontSize = Mathf.RoundToInt(Screen.height * 0.016f), fontStyle = FontStyle.Bold };
-            if (m_GuideStyle == null)
-                m_GuideStyle = new GUIStyle(GUI.skin.label) { fontSize = Mathf.RoundToInt(Screen.height * 0.014f), wordWrap = true, alignment = TextAnchor.UpperCenter, normal = { textColor = Color.white } };
-            m_ChordReader.DrawGuide(m_Dot, m_GuideStyle);
-
-            s_AssistRect = new Rect(Screen.width * 0.05f, Screen.height * 0.345f, Screen.width * 0.44f, Screen.height * 0.045f);
-            s_ChordModeRect = new Rect(Screen.width * 0.51f, Screen.height * 0.345f, Screen.width * 0.44f, Screen.height * 0.045f);
-            if (GUI.Button(s_ChordModeRect, k_ChordModeLabels[(int)m_ChordReader.CurrentMode], m_ButtonStyle))
-            {
-                m_ChordReader.CurrentMode = (GuitarChordReader.Mode)(((int)m_ChordReader.CurrentMode + 1) % 3);
-                try
-                {
-                    PlayerPrefs.SetInt(k_ChordModeKey, (int)m_ChordReader.CurrentMode);
-                }
-                catch (System.Exception)
-                {
-                }
-            }
-            DrawPatterns();
-            bool assist = GUI.Toggle(s_AssistRect, s_Assist, s_Assist ? "Помощь боя: вкл" : "Помощь боя: выкл", m_ButtonStyle);
-            if (assist != s_Assist)
-            {
-                s_Assist = assist;
-                try
-                {
-                    PlayerPrefs.SetInt(k_AssistKey, assist ? 1 : 0);
-                }
-                catch (System.Exception)
-                {
-                }
-            }
-        }
-
-        void DrawPatterns()
-        {
-            if (m_PatternLabels == null)
-            {
-                m_PatternLabels = new string[k_Patterns.Length];
-                for (int i = 0; i < k_Patterns.Length; i++)
-                    m_PatternLabels[i] = k_Patterns[i].Name;
-                m_PatternStyle = new GUIStyle(GUI.skin.label)
-                {
-                    fontSize = Mathf.RoundToInt(Screen.height * 0.026f),
-                    alignment = TextAnchor.MiddleCenter,
-                    richText = true,
-                    normal = { textColor = Color.white },
-                };
-            }
-
-            s_PatternRect = new Rect(Screen.width * 0.05f, Screen.height * 0.395f, Screen.width * 0.9f, Screen.height * 0.045f);
-            int selected = GUI.Toolbar(s_PatternRect, s_Pattern, m_PatternLabels, m_ButtonStyle);
-            if (selected != s_Pattern)
-            {
-                s_Pattern = selected;
-                m_PatternStep = 0;
-                m_PreviousSlot = -1;
-                m_Pending.Clear();
-                try
-                {
-                    PlayerPrefs.SetInt(k_PatternKey, selected);
-                }
-                catch (System.Exception)
-                {
-                }
-            }
-
-            // The pattern's strokes, grouped as they're struck, the next strike highlighted.
-            var pattern = k_Patterns[s_Pattern];
-            var strokes = pattern.Strokes;
-            bool restarts = Time.time - m_LastStrumTime > k_PatternRestart;
-            int nextGroup = restarts ? 0 : m_PatternStep;
-            var text = new System.Text.StringBuilder();
-            if (strokes.Length == 0)
-                text.Append("бей как хочешь");
-            for (int start = 0; start < strokes.Length;)
-            {
-                int end = pattern.GroupEnd(start);
-                var group = new System.Text.StringBuilder();
-                for (int i = start; i < end; i++)
-                    group.Append(Symbol(strokes[i]));
-                text.Append(start == nextGroup ? $"<color=#ffd400><b>{group}</b></color>" : group.ToString());
-                if (end < strokes.Length)
-                    text.Append("   ");
-                start = end;
-            }
-            if (s_Assist && m_Slot > 0f && !restarts && strokes.Length > 0)
-            {
-                // A light that flashes on the beat, to keep time by.
-                float beat = m_Slot * pattern.SlotsPerBeat;
-                float phase = (float)((Time.timeAsDouble - m_BarStart) / beat);
-                bool onBeat = phase - Mathf.Floor(phase) < 0.2f;
-                text.Append(onBeat ? "   <color=#ffd400>●</color>" : "   <color=#ffffff55>●</color>");
-                text.Append($"  <size={Mathf.RoundToInt(Screen.height * 0.016f)}>{Mathf.RoundToInt(60f / beat)} уд/мин</size>");
-            }
-            GUI.Label(new Rect(Screen.width * 0.05f, Screen.height * 0.445f, Screen.width * 0.9f, Screen.height * 0.04f), text.ToString(), m_PatternStyle);
         }
 
         static int InterfaceOrientation()
