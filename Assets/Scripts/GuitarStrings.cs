@@ -18,7 +18,7 @@ namespace GuitarAR
         const float k_WobbleDecay = 0.45f;       // Seconds.
         const float k_StereoSpread = 0.35f;
         const int k_VoicesPerString = 2;         // A new note starts on the free voice while the old one ends.
-        const float k_Overlap = 0.03f;           // Seconds the old note rings under the new one, hiding the cut.
+        const float k_Overlap = 0.005f;          // Seconds the old note rings under the new one before fading.
         const float k_MixGain = 0.45f;           // Six strings at full volume would add up past 1 and clip.
 
         static readonly List<GuitarStrings> s_Active = new List<GuitarStrings>();
@@ -28,6 +28,7 @@ namespace GuitarAR
         readonly float[] m_PluckTimes = new float[StringCount];
         readonly float[] m_PluckStrengths = new float[StringCount];
         readonly AudioSource[] m_Voices = new AudioSource[StringCount * k_VoicesPerString];
+        readonly GuitarVoiceFade[] m_Fades = new GuitarVoiceFade[StringCount * k_VoicesPerString];
         readonly int[] m_LastVoice = new int[StringCount];
 
         /// <summary>How many string voices are sounding right now, on all guitars.</summary>
@@ -63,13 +64,17 @@ namespace GuitarAR
                     m_RestPositions[i] = m_Strings[i].localPosition;
                 m_PluckTimes[i] = float.NegativeInfinity;
 
+                // Each voice on its own object, so its fade (a filter) works on that voice alone.
                 for (int v = 0; v < k_VoicesPerString; v++)
                 {
-                    var voice = gameObject.AddComponent<AudioSource>();
+                    var holder = new GameObject($"Voice{i + 1}.{v + 1}");
+                    holder.transform.SetParent(transform, false);
+                    var voice = holder.AddComponent<AudioSource>();
                     voice.playOnAwake = false;
                     voice.spatialBlend = 0f;
                     voice.panStereo = Mathf.Lerp(-k_StereoSpread, k_StereoSpread, i / (StringCount - 1f));
                     m_Voices[i * k_VoicesPerString + v] = voice;
+                    m_Fades[i * k_VoicesPerString + v] = holder.AddComponent<GuitarVoiceFade>();
                 }
             }
         }
@@ -135,10 +140,12 @@ namespace GuitarAR
             // stopping it at once would leave a silent gap until a delayed note starts.
             int previous = stringIndex * k_VoicesPerString + m_LastVoice[stringIndex];
             m_LastVoice[stringIndex] = (m_LastVoice[stringIndex] + 1) % k_VoicesPerString;
-            var voice = m_Voices[stringIndex * k_VoicesPerString + m_LastVoice[stringIndex]];
+            int next = stringIndex * k_VoicesPerString + m_LastVoice[stringIndex];
+            var voice = m_Voices[next];
 
             double start = AudioSettings.dspTime + Mathf.Max(0f, delay);
             voice.Stop();
+            m_Fades[next].Cancel();
             int fret = midiNote - GuitarSynth.OpenStrings[stringIndex];
             if (GuitarSamples.TryGet(stringIndex, fret, volume, muted, out var clip, out float pitch))
             {
@@ -156,7 +163,11 @@ namespace GuitarAR
             else
                 voice.Play();
             if (m_Voices[previous].isPlaying)
-                m_Voices[previous].SetScheduledEndTime(start + k_Overlap);
+            {
+                // Fade the old note out under the new one, then stop it once it's silent.
+                m_Fades[previous].FadeOutAt(start + k_Overlap);
+                m_Voices[previous].SetScheduledEndTime(start + k_Overlap + GuitarVoiceFade.Seconds + 0.05);
+            }
 
             m_PluckTimes[stringIndex] = Time.time + delay;
             m_PluckStrengths[stringIndex] = volume;

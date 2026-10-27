@@ -41,7 +41,10 @@ namespace GuitarAR
         };
 
         const float k_MinVolume = 0.45f;
-        const float k_StrumRoll = 0.012f;     // Seconds between strings when a tap strums them all.
+        // Seconds from one string to the next in a strum: a whole down strum takes 15-20 ms when
+        // it's fast and hard, about 40 ms when it's slow. Any slower and the chord smears.
+        const float k_FastRoll = 0.0035f;
+        const float k_SlowRoll = 0.008f;
         const float k_MaxRoll = 0.05f;
         const float k_Retrigger = 0.04f;      // A string can't be re-plucked sooner than this.
         const float k_AimableSpacing = 0.012f; // Below this string spacing (fraction of screen width), taps strum.
@@ -259,7 +262,7 @@ namespace GuitarAR
                 if (spacing < Screen.width * k_AimableSpacing)
                 {
                     for (int i = 0; i < GuitarStrings.StringCount; i++)
-                        Play(guitar, i, 0.8f, i * k_StrumRoll);
+                        Play(guitar, i, 0.8f, i * Roll(0.8f));
                 }
                 else
                 {
@@ -297,6 +300,9 @@ namespace GuitarAR
                 Play(crossing.guitar, crossing.stringIndex, volume, crossing.along * roll);
         }
 
+        /// <summary>The time between strings in a strum this loud: louder strums are faster.</summary>
+        static float Roll(float volume) => Mathf.Lerp(k_SlowRoll, k_FastRoll, Mathf.InverseLerp(0.5f, 1f, volume));
+
         /// <summary>
         /// Strums the chosen chord: a down strum rolls from the low E up, an up strum (lighter)
         /// rolls back over the top four strings.
@@ -305,15 +311,16 @@ namespace GuitarAR
         {
             if (s_Instance == null)
                 return;
+            float roll = Roll(volume);
             if (down)
             {
                 for (int i = 0; i < GuitarStrings.StringCount; i++)
-                    s_Instance.Play(guitar, i, volume, delay + i * k_StrumRoll);
+                    s_Instance.Play(guitar, i, volume, delay + i * roll);
             }
             else
             {
                 for (int i = GuitarStrings.StringCount - 1, n = 0; i >= 2; i--, n++)
-                    s_Instance.Play(guitar, i, volume * 0.8f, delay + n * k_StrumRoll * 0.8f);
+                    s_Instance.Play(guitar, i, volume * 0.8f, delay + n * roll);
             }
         }
 
@@ -338,8 +345,10 @@ namespace GuitarAR
         {
             if (s_Instance == null)
                 return;
+            // The palm comes down on all the strings at once, nearly.
+            float roll = Roll(volume) * 0.5f;
             for (int i = 0; i < GuitarStrings.StringCount; i++)
-                s_Instance.Play(guitar, i, volume * 0.7f, delay + i * k_StrumRoll * 0.5f, true);
+                s_Instance.Play(guitar, i, volume * 0.9f, delay + i * roll, true);
         }
 
         /// <summary>Plucks one string of the chosen chord.</summary>

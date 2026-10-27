@@ -7,10 +7,12 @@ https://theremin.music.uiowa.edu/MISguitar.html. Their terms: the recordings "ma
 and used for any projects, without restrictions".
 
 Each source file is one string played up a chromatic run at one dynamic. This cuts every run into
-notes, checks each note's pitch and retunes it to A = 440 Hz, and writes the first frets of each
-string as {dynamic}_s{string}_f{fret}.wav (string 1 is the low E), which GuitarSamples.cs loads.
+notes, checks each note's pitch and retunes it to A = 440 Hz, starts it exactly at the pluck,
+evens out how loud the notes sound, and writes the first frets of each string as
+{dynamic}_s{string}_f{fret}.wav (string 1 is the low E), which GuitarSamples.cs loads.
 
     python3 Tools/make-guitar-samples.py
+    python3 Tools/make-guitar-samples.py --polish   # Only reshape the notes already made.
 
 Only the standard library is needed; the sources are downloaded with curl into
 Library/GuitarSampleSources and kept there.
@@ -47,8 +49,10 @@ RUNS = {
 RATE = 48000            # Unity's output rate (ProjectSettings/AudioManager), so notes play unresampled.
 NOTE_SECONDS = 3.0      # Longest note kept; a strum cuts the ringing string anyway.
 FADE_SECONDS = 0.25     # Fade at the end of a note that's still ringing.
-PRE_ROLL = 0.002        # Seconds kept before the pluck, so its attack isn't clipped.
-PEAK = 0.6              # Every note is scaled to this peak, as the synthesized notes are.
+PRE_ROLL = 0.01         # Seconds read before the pluck that was found; shape() finds its exact start.
+LOUDNESS = 0.14         # Every note is scaled to this loudness (see loudness())...
+CEILING = 0.9           # ...with its peaks held down to this...
+MAX_LIMITING = 2.0      # ...by at most this factor: a note with a sharper click plays quieter.
 MAX_CENTS = 60          # A note further than this from its expected pitch is an error.
 NAMES = {"C": 0, "C#": 1, "Db": 1, "D": 2, "D#": 3, "Eb": 3, "E": 4, "F": 5, "F#": 6, "Gb": 6,
          "G": 7, "G#": 8, "Ab": 8, "A": 9, "A#": 10, "Bb": 10, "B": 11}
@@ -243,18 +247,72 @@ def resample(samples, ratio):
     return out
 
 
-def shape(note, rate):
-    """Trims a note where it has died away, fades its end, and scales it to the common peak."""
-    peak = max(abs(x) for x in note) or 1.0
+def attack_start(note, rate):
+    """Where the pluck itself starts, less a millisecond: the first sharp edge in the samples.
+    The finger pressing the string before letting go, or a breath, is slow and smooth; the
+    string's release is a sudden edge. Notes that all start at once make a tight strum."""
+    span = min(len(note) - 1, int(0.08 * rate))
+    edges = [abs(note[i + 1] - note[i]) for i in range(span)]
+    if not edges:
+        return 0
+    threshold = 0.3 * max(edges)
+    first = next(i for i, edge in enumerate(edges) if edge >= threshold)
+    return max(0, first - int(0.001 * rate))
+
+
+def loudness(note, rate):
+    """How loud a note sounds: the RMS of its first 0.4 s through the K-weighting of ITU-R
+    BS.1770 (the coefficients are for 48 kHz), which counts deep bass less and treble more."""
+    stages = [((1.53512485958697, -2.69169618940638, 1.19839281085285), (-1.69065929318241, 0.73248077421585)),
+              ((1.0, -2.0, 1.0), (-1.99004745483398, 0.99007225036621))]
+    x = note[:int(0.4 * rate)]
+    for (b0, b1, b2), (a1, a2) in stages:
+        y, x1, x2, y1, y2 = [0.0] * len(x), 0.0, 0.0, 0.0, 0.0
+        for i, v in enumerate(x):
+            out = b0 * v + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+            x2, x1, y2, y1 = x1, v, y1, out
+            y[i] = out
+        x = y
+    settled = x[int(0.02 * rate):]
+    return math.sqrt(sum(v * v for v in settled) / max(1, len(settled))) or 1.0
+
+
+def limit(note, rate, ceiling):
+    """Holds the peaks down to the ceiling by turning the level down over the millisecond
+    before each one and back up over 30 ms after, instead of clipping the waveform."""
+    need = [ceiling / abs(x) if abs(x) > ceiling else 1.0 for x in note]
+    if min(need, default=1.0) >= 1.0:
+        return note
+    down, up = 1.0 / max(1, int(0.001 * rate)), 1.0 / (0.03 * rate)
+    for i in range(len(need) - 2, -1, -1):
+        need[i] = min(need[i], need[i + 1] + down)
+    gain = 1.0
+    for i in range(len(note)):
+        gain = min(need[i], gain + up)
+        note[i] *= gain
+    return note
+
+
+def shape(note, rate, fade_out=True):
+    """Starts a note at its pluck, trims it where it has died away, fades its ends, and scales
+    it to the common loudness. None if it isn't a clean pluck."""
+    note = note[attack_start(note, rate):]
+    peak = max((abs(x) for x in note), default=0.0)
+    # A pluck is loudest at once and rings on; a note that's loudest later, or cut short by
+    # the next one, is a swell or a bad cut.
+    if peak == 0.0 or len(note) < 1.5 * rate or max(abs(x) for x in note[:int(0.15 * rate)]) < 0.5 * peak:
+        return None
     quiet = peak * 0.001  # -60 dB.
     block = 512
     for start in range(rate // 2, len(note) - block, block):
         if max(abs(x) for x in note[start:start + block]) < quiet:
             note = note[:start + block]
             break
-    fade = max(1, min(int(FADE_SECONDS * rate), len(note) // 2))
+    fade = max(1, min(int(FADE_SECONDS * rate), len(note) // 2)) if fade_out else 0
     attack = int(0.001 * rate)
-    gain = PEAK / peak
+    # Plucks of the thin strings are sharp: a loud click, then a quieter ring. Even the notes
+    # out by how they ring, and hold down the click, but only so far.
+    gain = min(LOUDNESS / loudness(note, rate), MAX_LIMITING * CEILING / peak)
     for i in range(len(note)):
         g = gain
         if i < attack:
@@ -262,7 +320,7 @@ def shape(note, rate):
         if i >= len(note) - fade:
             g *= (len(note) - i) / fade
         note[i] *= g
-    return note
+    return limit(note, rate, CEILING)
 
 
 def write_wav(path, samples, rate):
@@ -369,6 +427,10 @@ def main():
                 source = samples[begin:min(end, int(begin + NOTE_SECONDS * rate / ratio) + 4)]
                 note = resample(source, ratio) if abs(cents) > 1 else list(source)
                 note = shape(note[:limit - begin], rate)
+                if note is None:
+                    print(f"{label} {note_name(midi):4} not a clean pluck")
+                    skipped += 1
+                    continue
                 write_wav(os.path.join(OUTPUT_DIR, label + ".wav"), note, rate)
                 print(f"{label} {note_name(midi):4} {cents:+4.0f} cents  {len(note) / rate:.2f} s")
                 made.add((string, fret))
@@ -385,5 +447,25 @@ def main():
     print(f"done: {OUTPUT_DIR}")
 
 
+def polish():
+    """Reshapes the notes already in the output folder the way shape() makes new ones, without
+    the sources: for notes cut before shape() aligned plucks and evened out loudness."""
+    for name in sorted(os.listdir(OUTPUT_DIR)):
+        if not re.fullmatch(r"(mf|ff)_s\d_f\d+\.wav", name):
+            continue
+        path = os.path.join(OUTPUT_DIR, name)
+        samples, rate = read_audio(path)
+        note = shape(samples, rate, fade_out=False)
+        if note is None:
+            # Played from a neighbour instead (GuitarSamples.cs).
+            os.remove(path)
+            if os.path.exists(path + ".meta"):
+                os.remove(path + ".meta")
+            print(f"{name}: not a clean pluck, removed")
+            continue
+        write_wav(path, note, rate)
+        print(f"{name}: {len(note) / rate:.2f} s, peak {max(abs(x) for x in note):.2f}")
+
+
 if __name__ == "__main__":
-    main()
+    polish() if sys.argv[1:] == ["--polish"] else main()

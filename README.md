@@ -15,7 +15,8 @@ Built with Unity 6 LTS, Universal Render Pipeline and AR Foundation (ARCore on A
 | `Assets/Scripts/GuitarWearer.cs` | Shared logic for wearing the guitar on a torso: pose, smoothing, pop-in animation |
 | `Assets/Scripts/GuitarBodyAttacher.cs` | Back camera: hangs the guitar on a person found by ARKit body tracking |
 | `Assets/Scripts/GuitarSelfieAttacher.cs` | Front camera: hangs the guitar on you, estimated from your face |
-| `Assets/Scripts/GuitarStrings.cs` | A guitar's playable strings: screen position, one voice per string, wobble when plucked |
+| `Assets/Scripts/GuitarStrings.cs` | A guitar's playable strings: screen position, two voices per string, wobble when plucked |
+| `Assets/Scripts/GuitarVoiceFade.cs` | Fades a string's ringing note out when the string is played again, instead of a click |
 | `Assets/Scripts/GuitarStrummer.cs` | Swipe across the strings to strum, tap to pluck, chord buttons |
 | `Assets/Scripts/GuitarSamples.cs` | Plays recordings of a real guitar, one per string and fret, from `Assets/Resources/GuitarSamples` |
 | `Assets/Scripts/GuitarSynth.cs` | Synthesizes plucked-string notes (Karplus-Strong) for notes without a recording |
@@ -77,13 +78,15 @@ chord's fingering goes (cyan dots show where); with gestures, hold up fingers (1
 default) makes any quick pass through a wide zone around the strings a full strum, so grazing a
 string on the way doesn't make stray notes. The settings button (top right) holds strum help, how
 the chord is picked and the diagnostics; the card under it picks the strumming pattern and shows
-the next strike and the beat.
+the next strike and the beat. With a pattern, strike the way its next group starts (a muted stroke
+is a down stroke) and that group plays in time; the hand's way back between strikes plays nothing.
 
 **Playing:** once the guitar is on screen, swipe across its strings to strum, or tap a string to
 pluck it. Pick a chord (Em, Am, C, G, D, E) with the buttons above the mode buttons. When the
 guitar is far away and its strings are too close together to aim at, a tap strums all six. The
 notes are recordings of a real classical guitar, one for each string and fret, played gently and
-hard; `python3 Tools/make-guitar-samples.py` makes them again. A guitar model you import
+hard, each starting right at the pluck and made equally loud; `python3 Tools/make-guitar-samples.py`
+makes them again. A guitar model you import
 is playable if its strings are children named `String1` (low E) to `String6` and it has a
 `GuitarStrings` component.
 

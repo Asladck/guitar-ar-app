@@ -99,6 +99,10 @@ namespace GuitarAR
         const float k_MinSlot = 0.07f;         // Shortest and longest slot that count towards the tempo.
         const float k_MaxSlot = 0.5f;
         const float k_MaxRhythmDelay = 0.07f;  // Seconds; the most a strike is held back.
+        // How far from when a group is due (in slots) a strike may come to play it: the next group...
+        const float k_NextGroupSlots = 1.25f;
+        const float k_NextGroupShare = 0.6f;   // ...or this share of the slots to it, if that's more...
+        const float k_OtherGroupSlots = 1f;    // ...and another group, the player having got there unseen.
 
         readonly float[] m_SlotSamples = new float[k_TempoSamples];
         int m_SlotSampleCount;
@@ -106,6 +110,7 @@ namespace GuitarAR
         double m_LastSounded = double.NegativeInfinity;
         double m_BarStart;
         int m_PreviousSlot = -1;
+        double m_GroupBusyUntil = double.NegativeInfinity;
 
         // Later strokes of a group, waiting for their time.
         struct PendingStroke
@@ -171,6 +176,7 @@ namespace GuitarAR
                 s_Pattern = value;
                 m_PatternStep = 0;
                 m_PreviousSlot = -1;
+                m_GroupBusyUntil = double.NegativeInfinity;
                 m_Pending.Clear();
                 Save(k_PatternKey, value);
             }
@@ -507,12 +513,12 @@ namespace GuitarAR
             if (Time.time - m_LastStrumTime < cooldown)
                 return;
             float sinceLast = Time.time - m_LastStrumTime;
-            m_LastStrumTime = Time.time;
-            m_LastStrumDown = down;
 
             var pattern = k_Patterns[s_Pattern];
             if (pattern.Strokes.Length == 0)
             {
+                m_LastStrumTime = Time.time;
+                m_LastStrumDown = down;
                 float freeDelay = Rhythm(sinceLast, m_PreviousSlot < 0 ? 0 : 1);
                 m_PreviousSlot = 0;
                 GuitarStrummer.Strum(guitar, down, volume, freeDelay);
@@ -525,7 +531,27 @@ namespace GuitarAR
             {
                 m_PatternStep = 0;
                 m_PreviousSlot = -1;
+                m_GroupBusyUntil = double.NegativeInfinity;
             }
+            // While a group plays, the hand is making its strokes: those passes are already heard.
+            if (Time.timeAsDouble < m_GroupBusyUntil)
+                return;
+            int step = NextGroup(pattern, down, sinceLast);
+            if (step < 0 && m_PreviousSlot < 0)
+            {
+                // Before the pattern has begun, a strike the wrong way plays as it is; the
+                // pattern waits for its first stroke.
+                m_LastStrumTime = Time.time;
+                m_LastStrumDown = down;
+                GuitarStrummer.Strum(guitar, down, volume);
+                return;
+            }
+            if (step < 0)
+                return;  // The hand coming back between strokes, as it does when strumming.
+
+            m_LastStrumTime = Time.time;
+            m_LastStrumDown = down;
+            m_PatternStep = step;
             int slot = pattern.Slots[m_PatternStep];
             int gap = m_PreviousSlot < 0 ? 0 : (slot - m_PreviousSlot + pattern.Length) % pattern.Length;
             if (gap == 0 && m_PreviousSlot >= 0)
@@ -547,10 +573,48 @@ namespace GuitarAR
                     Volume = volume,
                 });
             }
+            m_GroupBusyUntil = Time.timeAsDouble + delay + (pattern.Slots[end - 1] - slot + 0.5f) * slotSeconds;
 
             m_PreviousSlot = slot;
             m_PatternStep = end % pattern.Strokes.Length;
         }
+
+        /// <summary>
+        /// The group a strike in this direction plays, or -1 if it plays none. A strike goes the way
+        /// of a group's first stroke (a muted stroke is a down stroke). Once the tempo is known, it
+        /// also has to come about when that group is due: the next group, or another one if a
+        /// strike wasn't seen and the player is already further on. Anything else is the hand
+        /// coming back between strokes, as it does when strumming.
+        /// </summary>
+        int NextGroup(Pattern pattern, bool down, float sinceLast)
+        {
+            bool fits = IsDown(pattern.Strokes[m_PatternStep]) == down;
+            if (m_PreviousSlot < 0 || m_Slot <= 0f)
+                return fits ? m_PatternStep : -1;
+
+            float elapsed = sinceLast / m_Slot;
+            int best = -1;
+            float bestMiss = float.MaxValue;
+            for (int start = 0; start < pattern.Strokes.Length; start = pattern.GroupEnd(start))
+            {
+                if (IsDown(pattern.Strokes[start]) != down)
+                    continue;
+                int gap = (pattern.Slots[start] - m_PreviousSlot + pattern.Length) % pattern.Length;
+                if (gap == 0)
+                    gap = pattern.Length;
+                float miss = Mathf.Abs(gap - elapsed);
+                // The next group may come later or sooner as the player's tempo drifts.
+                float allowed = start == m_PatternStep ? Mathf.Max(k_NextGroupSlots, k_NextGroupShare * gap) : k_OtherGroupSlots;
+                if (miss <= allowed && (miss < bestMiss || (miss == bestMiss && start == m_PatternStep)))
+                {
+                    best = start;
+                    bestMiss = miss;
+                }
+            }
+            return best;
+        }
+
+        static bool IsDown(Stroke stroke) => stroke != Stroke.Up;
 
         static void Play(GuitarStrings guitar, Stroke stroke, float volume, float delay)
         {
