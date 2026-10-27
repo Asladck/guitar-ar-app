@@ -88,14 +88,16 @@ namespace GuitarAR
             new Pattern("Свободный", 1, 1, ""),
             // Eighths, «раз-и-два-и-три-и-четыре-и»: ↓ _ ✕ ↑ _ ↑ ✕ ↑. Strikes: ↓, ✕↑, ↑✕↑.
             new Pattern("Шестёрка", 8, 2, "D.XU.UXU"),
-            // Triplets: ↓ _ ✕ | _ ↑ ↑ | _ ↑ ↓ | _ ✕ ↑. Strikes: ↓, ✕, ↑↑, ↑↓, ✕↑.
-            new Pattern("Восьмёрка", 12, 3, "D.X.UU.UD.XU"),
+            // Triplets, the plain version without muting: ↓ _ ↓ | _ ↑ ↑ | _ ↑ ↓ | _ ↓ ↑.
+            // Strikes: ↓, ↓, ↑↑, ↑↓, ↓↑.
+            new Pattern("Восьмёрка", 12, 3, "D.D.UU.UD.DU"),
         };
 
         // Rhythm: the player's tempo is learned from their strikes. With strum help on, a strike
         // that comes a little early is held back to land on the beat.
         const int k_TempoSamples = 4;
         const float k_DefaultSlot = 0.15f;     // Seconds per slot until the player's tempo is known.
+        const float k_MaxGroupStep = 0.11f;    // Seconds; the strokes of a group follow each other at least this quickly.
         const float k_MinSlot = 0.07f;         // Shortest and longest slot that count towards the tempo.
         const float k_MaxSlot = 0.5f;
         const float k_MaxRhythmDelay = 0.07f;  // Seconds; the most a strike is held back.
@@ -560,20 +562,22 @@ namespace GuitarAR
             if (m_PatternStep == 0)
                 m_BarStart = Time.timeAsDouble + delay;
 
+            // A group is a quick flick of the wrist, however slowly the bar goes.
             float slotSeconds = m_Slot > 0f ? m_Slot : k_DefaultSlot;
+            float groupStep = Mathf.Min(slotSeconds, k_MaxGroupStep);
             int end = pattern.GroupEnd(m_PatternStep);
             Play(guitar, pattern.Strokes[m_PatternStep], volume, delay);
             for (int i = m_PatternStep + 1; i < end; i++)
             {
                 m_Pending.Add(new PendingStroke
                 {
-                    Time = Time.timeAsDouble + delay + (pattern.Slots[i] - slot) * slotSeconds,
+                    Time = Time.timeAsDouble + delay + (pattern.Slots[i] - slot) * groupStep,
                     Guitar = guitar,
                     Stroke = pattern.Strokes[i],
                     Volume = volume,
                 });
             }
-            m_GroupBusyUntil = Time.timeAsDouble + delay + (pattern.Slots[end - 1] - slot + 0.5f) * slotSeconds;
+            m_GroupBusyUntil = Time.timeAsDouble + delay + (pattern.Slots[end - 1] - slot) * groupStep + 0.5f * slotSeconds;
 
             m_PreviousSlot = slot;
             m_PatternStep = end % pattern.Strokes.Length;
