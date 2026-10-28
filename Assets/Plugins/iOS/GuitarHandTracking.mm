@@ -4,7 +4,8 @@
 
 // Finds hands in the AR camera image with Apple Vision (ARKit has no hand tracking on iPhone).
 // Unity calls GuitarHands_Process every frame; it starts a detection on the newest camera frame
-// unless one is still running. GuitarHands_Get copies out the latest result: for each hand, the
+// unless one is still running. The camera image is stored sideways (the sensor is landscape), so
+// Vision is told which way is up as the image is shown, and sees hands upright, as it was trained. GuitarHands_Get copies out the latest result: for each hand, the
 // joints below as (x, y, confidence), with x and y in normalized screen coordinates
 // (0..1, origin top left), already matched to how the camera image is shown on screen.
 
@@ -16,7 +17,7 @@ typedef struct
 } GuitarARNativeSession;
 
 static const int kMaxHands = 2;
-static const int kJointCount = 11;
+static const int kJointCount = 12;
 
 static float s_Points[kMaxHands * kJointCount * 3];
 static int s_Chirality[kMaxHands];
@@ -43,7 +44,38 @@ static NSArray<VNHumanHandPoseObservationJointName>* Joints()
         VNHumanHandPoseObservationJointNameRingTip,
         VNHumanHandPoseObservationJointNameLittlePIP,
         VNHumanHandPoseObservationJointNameLittleTip,
+        VNHumanHandPoseObservationJointNameIndexDIP,
     ];
+}
+
+// Which way the camera image must be turned to be upright as it's shown: the turn that brings the
+// image direction shown as "up" on screen to its top. A mirrored (selfie) view is only flipped
+// sideways, so up stays up; Vision is never given a mirrored image, so it still tells left
+// hands from right ones as before.
+static CGImagePropertyOrientation UprightOrientation(CGAffineTransform toView)
+{
+    // toView maps normalized image points to the view; solve for the image direction that ends
+    // up pointing up the screen (view y grows downwards).
+    double det = toView.a * toView.d - toView.b * toView.c;
+    if (det == 0)
+        return kCGImagePropertyOrientationUp;
+    double upX = toView.c / det, upY = -toView.a / det;
+    if (fabs(upY) > fabs(upX))
+        return upY < 0 ? kCGImagePropertyOrientationUp : kCGImagePropertyOrientationDown;
+    // Up is the image's left side: turn it a quarter clockwise (.right), else anticlockwise (.left).
+    return upX < 0 ? kCGImagePropertyOrientationRight : kCGImagePropertyOrientationLeft;
+}
+
+// A point Vision found in the turned (upright) image, origin top left, back in the camera image.
+static CGPoint ToImage(CGPoint upright, CGImagePropertyOrientation orientation)
+{
+    switch (orientation)
+    {
+        case kCGImagePropertyOrientationRight: return CGPointMake(upright.y, 1.0 - upright.x);
+        case kCGImagePropertyOrientationLeft: return CGPointMake(1.0 - upright.y, upright.x);
+        case kCGImagePropertyOrientationDown: return CGPointMake(1.0 - upright.x, 1.0 - upright.y);
+        default: return upright;
+    }
 }
 
 extern "C" void GuitarHands_Process(void* nativeSession, float viewWidth, float viewHeight, int interfaceOrientation)
@@ -73,6 +105,7 @@ extern "C" void GuitarHands_Process(void* nativeSession, float viewWidth, float 
     CVPixelBufferRetain(image);
     CGAffineTransform toView = [frame displayTransformForOrientation:(UIInterfaceOrientation)interfaceOrientation
                                                         viewportSize:CGSizeMake(viewWidth, viewHeight)];
+    CGImagePropertyOrientation orientation = UprightOrientation(toView);
     double timestamp = frame.timestamp;
     s_Busy = YES;
 
@@ -80,7 +113,7 @@ extern "C" void GuitarHands_Process(void* nativeSession, float viewWidth, float 
         @autoreleasepool
         {
             VNImageRequestHandler* handler = [[VNImageRequestHandler alloc] initWithCVPixelBuffer:image
-                                                                                     orientation:kCGImagePropertyOrientationUp
+                                                                                     orientation:orientation
                                                                                          options:@{}];
             NSError* error = nil;
             float points[kMaxHands * kJointCount * 3] = {0};
@@ -101,7 +134,8 @@ extern "C" void GuitarHands_Process(void* nativeSession, float viewWidth, float 
                         if (p == nil)
                             continue;
                         // Vision's origin is bottom left; ARKit's display transform expects top left.
-                        CGPoint view = CGPointApplyAffineTransform(CGPointMake(p.location.x, 1.0 - p.location.y), toView);
+                        CGPoint image = ToImage(CGPointMake(p.location.x, 1.0 - p.location.y), orientation);
+                        CGPoint view = CGPointApplyAffineTransform(image, toView);
                         out[0] = view.x;
                         out[1] = view.y;
                         out[2] = p.confidence;
@@ -131,7 +165,7 @@ extern "C" void GuitarHands_Process(void* nativeSession, float viewWidth, float 
     });
 }
 
-// Copies the latest hands into points (room for maxHands * 11 * 3 floats) and chirality (-1 left,
+// Copies the latest hands into points (room for maxHands * 12 * 3 floats) and chirality (-1 left,
 // 1 right, 0 unknown) and returns how many were found. timestamp is the camera frame's time, so
 // the caller can tell a new result.
 extern "C" int GuitarHands_Get(float* points, int* chirality, int maxHands, double* timestamp)

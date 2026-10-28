@@ -14,12 +14,14 @@ namespace GuitarAR
     public class GuitarHandPlayer : MonoBehaviour
     {
         // In the order the native plugin reports them.
-        enum Joint { Wrist, ThumbTip, IndexMCP, IndexPIP, IndexTip, MiddlePIP, MiddleTip, RingPIP, RingTip, LittlePIP, LittleTip }
+        enum Joint { Wrist, ThumbTip, IndexMCP, IndexPIP, IndexTip, MiddlePIP, MiddleTip, RingPIP, RingTip, LittlePIP, LittleTip, IndexDIP }
 
         const int k_MaxHands = 2;
-        const int k_JointCount = 11;
+        const int k_JointCount = 12;
         const int k_RightHand = 1;              // Vision's chirality for a right hand.
         const float k_MinConfidence = 0.2f;
+        const float k_TipConfidence = 0.3f;     // Below this the index tip is guessed from the joint before it.
+        const float k_TipFromDip = 0.8f;        // The fingertip's last bone, as a share of the one before it.
         const float k_RaiseRatio = 1.2f;        // Wrist-to-tip vs wrist-to-middle-knuckle above which the index counts as raised...
         const float k_LowerRatio = 1.05f;       // ...and below which it counts as lowered again (in between, it stays as it was).
         const float k_StrumSpeed = 0.8f;        // Screen heights per second; faster passes are strums.
@@ -139,11 +141,15 @@ namespace GuitarAR
         readonly GuitarChordReader m_ChordReader = new GuitarChordReader();
         const string k_ChordModeKey = "GuitarAR.ChordMode";
 
-        // The right hand's index fingertip, in screen pixels.
+        // The right hand's index fingertip, in screen pixels: as tracked, and with its jitter
+        // smoothed for slow moves (fast ones would lag).
         bool m_HasTip;
         bool m_Raised;
         Vector2 m_Tip;
         double m_TipTime;
+        readonly GuitarPointFilter m_TipFilter = new GuitarPointFilter(1.5f, 5f, 1f);
+        float m_TipConfidence;
+        float m_FrameRate;                      // Hand detections per second.
         float m_LastStrumTime = float.NegativeInfinity;
         bool m_LastStrumDown;
 
@@ -201,7 +207,7 @@ namespace GuitarAR
         public HandState RightHand => !m_HasTip ? HandState.NotSeen : m_Raised ? HandState.Ready : HandState.FingerDown;
 
         /// <summary>The right index fingertip in screen pixels (origin bottom left), while it's seen.</summary>
-        public Vector2 Fingertip => m_Tip;
+        public Vector2 Fingertip => m_TipFilter.Value;
 
         /// <summary>
         /// The pattern's strokes as symbols, one entry per group that a single strike plays, and
@@ -293,6 +299,8 @@ namespace GuitarAR
             int count = GuitarHands_Get(m_Points, m_Chirality, k_MaxHands, out double timestamp);
             if (timestamp == m_LastTimestamp)
                 return;
+            if (m_LastTimestamp > 0 && timestamp > m_LastTimestamp)
+                m_FrameRate = Mathf.Lerp(m_FrameRate, 1f / (float)(timestamp - m_LastTimestamp), 0.1f);
             m_LastTimestamp = timestamp;
             OnHands(count, timestamp);
 #endif
@@ -325,8 +333,11 @@ namespace GuitarAR
             {
                 // A blurred or briefly missed hand keeps its last fingertip for a moment.
                 if (m_HasTip && timestamp - m_TipTime > k_MaxGap)
+                {
                     m_HasTip = false;
-                s_Diagnostic = $"рук: {count}, правая: не видно\n{m_ChordReader.Diagnostic}";
+                    m_TipFilter.Reset();
+                }
+                s_Diagnostic = $"рук: {count}, правая: не видно, {m_FrameRate:0} кадр/с\n{m_ChordReader.Diagnostic}";
                 return;
             }
 
@@ -340,13 +351,17 @@ namespace GuitarAR
                     m_Raised = false;
             }
 
+            if (m_HasTip && timestamp - m_TipTime > k_MaxGap)
+                m_TipFilter.Reset();
+            var smoothFrom = m_TipFilter.Value;
+            var smoothTip = m_TipFilter.Filter(tip, timestamp);
             if (m_HasTip && (m_Raised || wasRaised) && timestamp - m_TipTime <= k_MaxGap)
-                Move(m_Tip, tip, (float)(timestamp - m_TipTime));
+                Move(m_Tip, tip, smoothFrom, smoothTip, (float)(timestamp - m_TipTime));
 
             m_HasTip = true;
             m_Tip = tip;
             m_TipTime = timestamp;
-            s_Diagnostic = $"рук: {count}, правая: палец {(m_Raised ? "поднят" : "опущен")} ({ratio:0.00}), кончик {tip:0}\n{m_ChordReader.Diagnostic}";
+            s_Diagnostic = $"рук: {count}, правая: палец {(m_Raised ? "поднят" : "опущен")} ({ratio:0.00}), кончик {tip:0} ({m_TipConfidence:0.00}), {m_FrameRate:0} кадр/с\n{m_ChordReader.Diagnostic}";
         }
 
         static readonly Joint[] k_FingerTips = { Joint.IndexTip, Joint.MiddleTip, Joint.RingTip, Joint.LittleTip };
@@ -367,14 +382,22 @@ namespace GuitarAR
             m_ChordReader.Read(wrist, wristSeen, m_LeftTips, m_LeftKnuckles, m_LeftSeen, timestamp);
         }
 
-        void Move(Vector2 from, Vector2 to, float seconds)
+        /// <summary>
+        /// The fingertip moved from one place to another (as tracked, and smoothed). A fast move
+        /// is taken as tracked, so a strum isn't late; a slow one smoothed, so the tracking's
+        /// jitter doesn't graze strings.
+        /// </summary>
+        void Move(Vector2 trackedFrom, Vector2 trackedTo, Vector2 smoothFrom, Vector2 smoothTo, float seconds)
         {
             var cam = Camera.main;
+            float speed = (trackedTo - trackedFrom).magnitude / Screen.height / Mathf.Max(seconds, 1e-3f);
+            bool fast = speed >= Mathf.Min(k_AssistStrumSpeed, k_StrumSpeed);
+            var from = fast ? trackedFrom : smoothFrom;
+            var to = fast ? trackedTo : smoothTo;
             float distance = (to - from).magnitude / Screen.height;
             if (cam == null || distance <= 0f)
                 return;
 
-            float speed = distance / Mathf.Max(seconds, 1e-3f);
             float volume = Mathf.Clamp(0.5f + 0.2f * speed, 0.5f, 1f);
 
             foreach (var guitar in GuitarStrings.Active)
@@ -538,16 +561,9 @@ namespace GuitarAR
             // While a group plays, the hand is making its strokes: those passes are already heard.
             if (Time.timeAsDouble < m_GroupBusyUntil)
                 return;
+            // A strike the wrong way plays nothing, also before the pattern has begun: it waits
+            // for its first stroke.
             int step = NextGroup(pattern, down, sinceLast);
-            if (step < 0 && m_PreviousSlot < 0)
-            {
-                // Before the pattern has begun, a strike the wrong way plays as it is; the
-                // pattern waits for its first stroke.
-                m_LastStrumTime = Time.time;
-                m_LastStrumDown = down;
-                GuitarStrummer.Strum(guitar, down, volume);
-                return;
-            }
             if (step < 0)
                 return;  // The hand coming back between strokes, as it does when strumming.
 
@@ -706,8 +722,15 @@ namespace GuitarAR
         {
             ratio = 0f;
             ratioKnown = false;
-            if (!TryGetJoint(hand, Joint.IndexTip, out indexTip))
-                return false;
+            m_TipConfidence = Confidence(hand, Joint.IndexTip);
+            if (!TryGetJoint(hand, Joint.IndexTip, out indexTip, k_TipConfidence))
+            {
+                // A tip that's blurred or hidden: carry on from the joint before it, along the finger.
+                bool pipSeen = TryGetJoint(hand, Joint.IndexPIP, out var pip);
+                if (!TryGetJoint(hand, Joint.IndexDIP, out var dip, k_TipConfidence))
+                    return false;
+                indexTip = pipSeen ? dip + (dip - pip) * k_TipFromDip : dip;
+            }
 
             if (TryGetJoint(hand, Joint.Wrist, out var wrist) && TryGetJoint(hand, Joint.IndexPIP, out var knuckle))
             {
@@ -722,12 +745,14 @@ namespace GuitarAR
         }
 
         /// <summary>A joint in screen pixels (origin bottom left), if it was seen confidently.</summary>
-        bool TryGetJoint(int hand, Joint joint, out Vector2 position)
+        bool TryGetJoint(int hand, Joint joint, out Vector2 position, float minConfidence = k_MinConfidence)
         {
             int i = (hand * k_JointCount + (int)joint) * 3;
             position = new Vector2(m_Points[i] * Screen.width, (1f - m_Points[i + 1]) * Screen.height);
-            return m_Points[i + 2] >= k_MinConfidence;
+            return m_Points[i + 2] >= minConfidence;
         }
+
+        float Confidence(int hand, Joint joint) => m_Points[(hand * k_JointCount + (int)joint) * 3 + 2];
 
         static bool AnyPlayable()
         {
