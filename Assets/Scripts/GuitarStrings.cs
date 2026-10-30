@@ -4,7 +4,7 @@ using UnityEngine;
 namespace GuitarAR
 {
     /// <summary>
-    /// The playable strings of one guitar: where they are on screen, two voices per string, and a
+    /// The playable strings of one guitar: where they are on screen, three voices per string, and a
     /// little wobble when one is plucked. Looks for children named String1..String6 (String1 is
     /// the low E); a guitar model needs the same names to be playable.
     /// <see cref="GuitarStrummer"/> turns touches into plucks.
@@ -17,7 +17,11 @@ namespace GuitarAR
         const float k_WobbleFrequency = 12f;
         const float k_WobbleDecay = 0.45f;       // Seconds.
         const float k_StereoSpread = 0.35f;
-        const int k_VoicesPerString = 2;         // A new note starts on the free voice while the old one ends.
+        // A new note starts on a free voice while the old one ends; three, so a stroke can already
+        // be scheduled while the one before it is still to start (slow frames, quick patterns).
+        // At most 6 x 3 voices per guitar sound at once, and the mix gain and the limiter keep
+        // them from clipping.
+        const int k_VoicesPerString = 3;
         const float k_Overlap = 0.005f;          // Seconds the old note rings under the new one before fading.
         const float k_MixGain = 0.45f;           // Six strings at full volume would add up past 1 and clip.
 
@@ -30,6 +34,7 @@ namespace GuitarAR
         readonly AudioSource[] m_Voices = new AudioSource[StringCount * k_VoicesPerString];
         readonly GuitarVoiceFade[] m_Fades = new GuitarVoiceFade[StringCount * k_VoicesPerString];
         readonly int[] m_LastVoice = new int[StringCount];
+        readonly double[] m_VoiceStart = new double[StringCount * k_VoicesPerString];  // AudioSettings.dspTime.
 
         /// <summary>How many string voices are sounding right now, on all guitars.</summary>
         public static int PlayingVoices
@@ -131,19 +136,29 @@ namespace GuitarAR
         /// <summary>
         /// Plays a string as the given MIDI note, at a volume from 0 to 1, after a short delay in
         /// seconds (so a strum rolls across the strings instead of hitting them all at once).
-        /// The note is the string's recording when there is one, synthesized otherwise.
-        /// A string that's plucked again stops ringing when the new note starts, like a real one.
         /// </summary>
         public void Pluck(int stringIndex, int midiNote, float volume, float delay = 0f, bool muted = false)
+            => PluckAt(stringIndex, midiNote, volume, AudioSettings.dspTime + Mathf.Max(0f, delay), muted);
+
+        /// <summary>
+        /// Plays a string as the given MIDI note at a time on the audio clock (AudioSettings.dspTime),
+        /// or at once if that's already now. The note is the string's recording when there is one,
+        /// synthesized otherwise. A string that's plucked again stops ringing when the new note
+        /// starts, like a real one.
+        /// </summary>
+        public void PluckAt(int stringIndex, int midiNote, float volume, double start, bool muted = false)
         {
-            // Start on the other voice and end the ringing one when the new note sounds, not now:
+            // Start on the next voice and end the ringing one when the new note sounds, not now:
             // stopping it at once would leave a silent gap until a delayed note starts.
             int previous = stringIndex * k_VoicesPerString + m_LastVoice[stringIndex];
             m_LastVoice[stringIndex] = (m_LastVoice[stringIndex] + 1) % k_VoicesPerString;
             int next = stringIndex * k_VoicesPerString + m_LastVoice[stringIndex];
             var voice = m_Voices[next];
 
-            double start = AudioSettings.dspTime + Mathf.Max(0f, delay);
+            double now = AudioSettings.dspTime;
+            bool later = start > now + 0.001;
+            if (!later)
+                start = now;
             voice.Stop();
             m_Fades[next].Cancel();
             int fret = midiNote - GuitarSynth.OpenStrings[stringIndex];
@@ -158,10 +173,11 @@ namespace GuitarAR
                 voice.pitch = 1f;
             }
             voice.volume = volume * k_MixGain;
-            if (delay > 0f)
+            if (later)
                 voice.PlayScheduled(start);
             else
                 voice.Play();
+            m_VoiceStart[next] = start;
             if (m_Voices[previous].isPlaying)
             {
                 // Fade the old note out under the new one, then stop it once it's silent.
@@ -169,8 +185,43 @@ namespace GuitarAR
                 m_Voices[previous].SetScheduledEndTime(start + k_Overlap + GuitarVoiceFade.Seconds + 0.05);
             }
 
+            float delay = (float)(start - now);
             m_PluckTimes[stringIndex] = Time.time + delay;
             m_PluckStrengths[stringIndex] = volume;
+        }
+
+        /// <summary>
+        /// Stops the music on all guitars: notes scheduled for later never start, and what rings
+        /// fades out over the given seconds instead of being cut off.
+        /// </summary>
+        public static void SilenceAll(float fadeSeconds)
+        {
+            foreach (var guitar in s_Active)
+                guitar.Silence(fadeSeconds);
+        }
+
+        void Silence(float fadeSeconds)
+        {
+            double now = AudioSettings.dspTime;
+            for (int v = 0; v < m_Voices.Length; v++)
+            {
+                var voice = m_Voices[v];
+                if (voice == null || !voice.isPlaying)
+                    continue;
+                if (m_VoiceStart[v] > now + 0.005)
+                {
+                    voice.Stop();  // Not started yet: cancel.
+                    continue;
+                }
+                double fadeAt = now + 0.005;
+                m_Fades[v].FadeOutAt(fadeAt, fadeSeconds);
+                voice.SetScheduledEndTime(fadeAt + fadeSeconds + 0.05);
+            }
+            for (int i = 0; i < StringCount; i++)
+            {
+                if (m_PluckTimes[i] > Time.time)
+                    m_PluckTimes[i] = float.NegativeInfinity;
+            }
         }
 
         void Update()

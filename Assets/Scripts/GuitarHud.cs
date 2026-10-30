@@ -5,9 +5,10 @@ namespace GuitarAR
 {
     /// <summary>
     /// The on-screen interface. At the top: the chord being played (it flashes on each strum),
-    /// whether the right hand can play, the strumming pattern with its next strike and the beat,
-    /// hints, and the settings. At the bottom: the chord buttons and the mode switch. Over the
-    /// camera image: a ring on the playing fingertip, and on the neck where the chord's fingers go.
+    /// whether the strumming hand can play, the play mode card (Easy's start/stop and pattern,
+    /// the metronome), hints, and the settings. At the bottom: the chord buttons and the mode
+    /// switch. Over the camera image: a ring on the strumming point, and on the neck where the
+    /// chord's fingers go.
     /// Everything stays inside the safe area, clear of the Dynamic Island and the home bar.
     /// </summary>
     public class GuitarHud : MonoBehaviour
@@ -34,14 +35,19 @@ namespace GuitarAR
             "Аккорд выбирается кнопками внизу",
         };
         static readonly float[] k_SliderKnobs = { 0.3f, 0.68f, 0.45f };
+        // In PlayMode order.
+        static readonly string[] k_PlayModeLabels = { "Лёгкий (авто)", "С помощью", "Свободный" };
+        static readonly string[] k_SourceLabels = { "Ладонь", "Палец" };
+        static readonly string[] k_SourceHelp = { "Бьёт центр ладони: проще всего", "Бьёт кончик указательного: точнее; если он потерян, бьёт ладонь" };
+        const float k_ChangeSeconds = 2.5f;
 
         GuitarModeSwitcher m_Switcher;
         GuitarHandPlayer m_Hands;
+        GuitarMusic m_Music;
         bool m_SettingsOpen;
         bool m_Diagnostics;
         string[] m_PatternLabels;
         string[] m_ChordLabels;
-        readonly List<string> m_Groups = new List<string>();
         string m_Hint;
         float m_HintAlpha;
         System.Action<Rect, int, bool> m_DrawModeSegment;
@@ -49,6 +55,7 @@ namespace GuitarAR
         void Awake()
         {
             m_Hands = GetComponent<GuitarHandPlayer>();
+            m_Music = GetComponent<GuitarMusic>();
             m_DrawModeSegment = DrawModeSegment;
             try
             {
@@ -66,11 +73,13 @@ namespace GuitarAR
                 m_Switcher = Object.FindAnyObjectByType<GuitarModeSwitcher>();
             if (m_Hands == null)
                 m_Hands = GetComponent<GuitarHandPlayer>();
+            if (m_Music == null)
+                m_Music = GetComponent<GuitarMusic>();
             if (m_PatternLabels == null)
             {
-                m_PatternLabels = new string[GuitarHandPlayer.PatternCount];
+                m_PatternLabels = new string[StrumPattern.All.Length];
                 for (int i = 0; i < m_PatternLabels.Length; i++)
-                    m_PatternLabels[i] = GuitarHandPlayer.PatternName(i);
+                    m_PatternLabels[i] = StrumPattern.All[i].Name;
                 m_ChordLabels = new string[GuitarStrummer.ChordCount];
                 for (int i = 0; i < m_ChordLabels.Length; i++)
                     m_ChordLabels[i] = GuitarStrummer.ChordName(i);
@@ -101,7 +110,7 @@ namespace GuitarAR
             float bottom = DrawTopRow(row, playable, pt);
             if (m_SettingsOpen)
                 bottom = DrawSettings(new Rect(left, bottom + k_Gap * pt, width, 0f), pt, safe);
-            else if (playable && m_Hands != null)
+            else if (playable && m_Hands != null && m_Music != null)
                 bottom = DrawRhythm(new Rect(left, bottom + k_Gap * pt, width, 84f * pt), pt);
             bottom = DrawHint(new Rect(left, bottom + k_Gap * pt, width, 0f), pt);
             if (m_Diagnostics)
@@ -138,22 +147,24 @@ namespace GuitarAR
             var status = new Rect(badge.xMax + k_Gap * pt, row.y, settings.x - k_Gap * pt - badge.xMax - k_Gap * pt, row.height);
             if (status.width > 40f * pt)
             {
-                var state = m_Hands != null ? m_Hands.RightHand : GuitarHandPlayer.HandState.NotSeen;
+                var state = m_Hands != null ? m_Hands.StrummingHand : GuitarHandPlayer.HandState.NotSeen;
+                bool easy = m_Music != null && m_Music.Mode == PlayMode.Easy;
+                bool playing = m_Music != null && m_Music.IsPlaying;
                 Color dot;
                 string text;
                 switch (state)
                 {
                     case GuitarHandPlayer.HandState.Ready:
                         dot = GuitarUI.Good;
-                        text = "Можно играть";
+                        text = !easy ? "Можно играть" : playing ? "Играет · кулак = стоп" : "Взмахни — начнём";
                         break;
-                    case GuitarHandPlayer.HandState.FingerDown:
+                    case GuitarHandPlayer.HandState.Paused:
                         dot = GuitarUI.Bad;
-                        text = "Палец опущен: пауза";
+                        text = GuitarHandPlayer.Source == GuitarHandPlayer.MotionSource.Palm ? "Кулак: пауза" : "Палец опущен: пауза";
                         break;
                     default:
-                        dot = GuitarUI.TextDim;
-                        text = "Покажи правую руку";
+                        dot = playing ? GuitarUI.Accent : GuitarUI.TextDim;
+                        text = GuitarHandPlayer.LeftHanded != GuitarHandPlayer.SwapHands ? "Покажи левую руку" : "Покажи правую руку";
                         break;
                 }
                 GuitarUI.Fill(status, status.height * 0.5f, GuitarUI.Panel);
@@ -164,7 +175,11 @@ namespace GuitarAR
             return row.yMax;
         }
 
-        /// <summary>The strumming pattern: its choice, its strikes with the next one lit, and the beat.</summary>
+        /// <summary>
+        /// The play mode card: the mode (automatic Easy, or your own strumming with or without
+        /// help), and under it Easy's start/stop button and pattern with the slot playing now, or
+        /// the metronome for your own strumming.
+        /// </summary>
         float DrawRhythm(Rect card, float pt)
         {
             GuitarUI.Fill(card, 18f * pt, GuitarUI.Panel);
@@ -172,59 +187,96 @@ namespace GuitarAR
             float pad = 8f * pt;
 
             var choice = new Rect(card.x + pad, card.y + pad, card.width - pad * 2f, 32f * pt);
-            int pattern = GuitarUI.Segmented(choice, m_Hands.CurrentPattern, m_PatternLabels, 13f);
-            if (pattern != m_Hands.CurrentPattern)
-                m_Hands.CurrentPattern = pattern;
+            int mode = GuitarUI.Segmented(choice, (int)m_Music.Mode, k_PlayModeLabels, 12f);
+            if (mode != (int)m_Music.Mode)
+                m_Music.Mode = (PlayMode)mode;
 
-            var steps = new Rect(card.x + pad, choice.yMax + 6f * pt, card.width - pad * 2f, card.yMax - pad - choice.yMax - 6f * pt);
-            int next = m_Hands.PatternGroups(m_Groups);
-            if (m_Groups.Count == 0)
-            {
-                GuitarUI.Label(steps, "Свободный бой: бей вниз и вверх как хочешь", 13f, GuitarUI.TextDim);
-                return card.yMax;
-            }
+            var row = new Rect(card.x + pad, choice.yMax + 6f * pt, card.width - pad * 2f, card.yMax - pad - choice.yMax - 6f * pt);
+            bool keepsTime = m_Music.TryGetPosition(out int beat, out float phase, out int slot);
 
-            // The beat light and tempo on the right, once the tempo is known.
-            float beatWidth = 0f;
-            if (m_Hands.TryGetBeat(out int bpm, out bool onBeat))
-            {
-                beatWidth = 78f * pt;
-                var beat = new Rect(steps.xMax - beatWidth, steps.y, beatWidth, steps.height);
-                GuitarUI.Dot(new Vector2(beat.x + 8f * pt, beat.center.y), 11f * pt, onBeat ? GuitarUI.Accent : new Color(1f, 1f, 1f, 0.2f));
-                GuitarUI.Label(new Rect(beat.x + 18f * pt, beat.y, beat.width - 18f * pt, beat.height), $"{bpm} уд/мин", 11f, GuitarUI.TextDim, false, TextAnchor.MiddleLeft);
-            }
+            // The tempo on the right.
+            float tempoWidth = 62f * pt;
+            GuitarUI.Label(new Rect(row.xMax - tempoWidth, row.y, tempoWidth, row.height), $"{m_Music.Bpm:0} уд/мин", 11f, GuitarUI.TextDim, false, TextAnchor.MiddleRight);
+            row.width -= tempoWidth + 6f * pt;
 
-            // One chip per strike, centred in the rest of the row.
-            float chipGap = 6f * pt;
-            float total = -chipGap;
-            foreach (var group in m_Groups)
-                total += GuitarUI.TextWidth(group, 17f, true) + 18f * pt + chipGap;
-            var area = new Rect(steps.x, steps.y, steps.width - beatWidth, steps.height);
-            float x = area.center.x - total * 0.5f;
-            for (int i = 0; i < m_Groups.Count; i++)
+            switch (m_Music.Mode)
             {
-                float w = GuitarUI.TextWidth(m_Groups[i], 17f, true) + 18f * pt;
-                var chip = new Rect(x, area.y + 1f * pt, w, area.height - 2f * pt);
-                bool lit = i == next;
-                GuitarUI.Fill(chip, chip.height * 0.5f, lit ? GuitarUI.Accent : GuitarUI.Track);
-                GuitarUI.Label(chip, m_Groups[i], 17f, lit ? GuitarUI.OnAccent : GuitarUI.Text, true);
-                x += w + chipGap;
+                case PlayMode.Easy:
+                {
+                    // Start / stop, big and coloured, so it's clear whether the music runs.
+                    bool playing = m_Music.IsPlaying;
+                    var button = new Rect(row.x, row.y, 78f * pt, row.height);
+                    GuitarUI.Fill(button, button.height * 0.5f, playing ? GuitarUI.Bad : GuitarUI.Good);
+                    GuitarUI.Label(button, playing ? "■ Стоп" : "▶ Старт", 14f, Color.white, true);
+                    if (GuitarUI.Tapped(button))
+                    {
+                        if (playing)
+                            m_Music.Stop("кнопка");
+                        else
+                            m_Music.Play();
+                    }
+                    DrawPatternSlots(new Rect(button.xMax + 6f * pt, row.y, row.xMax - button.xMax - 6f * pt, row.height), keepsTime ? slot : -1, pt);
+                    break;
+                }
+                case PlayMode.Assisted:
+                {
+                    // The metronome: four beats, the one now lit, and whether the last strike was nudged.
+                    float size = Mathf.Min(row.height - 8f * pt, 22f * pt);
+                    for (int i = 0; i < GuitarRhythmEngine.BeatsPerBar; i++)
+                    {
+                        var center = new Vector2(row.x + size * 0.5f + i * (size + 8f * pt), row.center.y);
+                        bool now = keepsTime && i == beat;
+                        float grow = now ? 1f + 0.35f * (1f - phase) : 1f;
+                        GuitarUI.Dot(center, size * grow * (i == 0 ? 1f : 0.8f), now ? GuitarUI.Accent : GuitarUI.Track);
+                    }
+                    float x = row.x + 4f * (size + 8f * pt) + 4f * pt;
+                    string last = Time.unscaledTime - m_Music.LastStrikeTime < 1.5f ? (m_Music.LastAssistSnapped ? "в долю" : "сразу") : "взмахивай в такт";
+                    GuitarUI.Label(new Rect(x, row.y, row.xMax - x, row.height), last, 12f, GuitarUI.TextDim, false, TextAnchor.MiddleLeft);
+                    break;
+                }
+                default:
+                    GuitarUI.Label(row, "Каждый взмах — один удар, сразу", 12f, GuitarUI.TextDim);
+                    break;
             }
             return card.yMax;
         }
 
+        /// <summary>Easy's pattern, one cell per slot (↓ ↑ ✕, or · for a rest), the one playing now lit.</summary>
+        void DrawPatternSlots(Rect area, int now, float pt)
+        {
+            var pattern = m_Music.CurrentPattern;
+            float gap = 3f * pt;
+            float width = (area.width - gap * (pattern.Length - 1)) / pattern.Length;
+            for (int i = 0; i < pattern.Length; i++)
+            {
+                string symbol = "·";
+                foreach (var hit in pattern.Hits)
+                {
+                    if (hit.Position == i)
+                        symbol = hit.Kind == StrumKind.Down ? "↓" : hit.Kind == StrumKind.Up ? "↑" : "×";
+                }
+                var cell = new Rect(area.x + i * (width + gap), area.y + 2f * pt, width, area.height - 4f * pt);
+                bool lit = i == now;
+                bool onBeat = i % pattern.SlotsPerBeat == 0;
+                GuitarUI.Fill(cell, Mathf.Min(8f * pt, width * 0.4f), lit ? GuitarUI.Accent : onBeat ? GuitarUI.Track : new Color(1f, 1f, 1f, 0.04f));
+                GuitarUI.Label(cell, symbol, 15f, lit ? GuitarUI.OnAccent : GuitarUI.Text, true);
+            }
+        }
+
         /// <summary>
-        /// The settings sheet: strum help, the speed of a pattern's pairs, how the chord is picked,
-        /// diagnostics. One column, or two side by side when one would run off the bottom of the
-        /// screen (the phone held sideways). Returns its bottom.
+        /// The settings sheet: tempo, pattern and metronome; what strikes; how the chord is
+        /// picked; hands (left-handed, swap, calibration); diagnostics. One column, or two side by
+        /// side when one would run off the bottom of the screen (the phone held sideways).
+        /// Returns its bottom.
         /// </summary>
         float DrawSettings(Rect area, float pt, Rect safe)
         {
             float pad = 14f * pt;
             int chordMode = m_Hands != null ? (int)m_Hands.ChordMode : (int)GuitarChordReader.Mode.Off;
             float oneInner = area.width - pad * 2f;
-            float pairs = AssistHeight(pt) + 1f + PairsHeight(pt);
-            float oneHeight = pad + pairs + 1f + ChordHeight(chordMode, oneInner, pt) + 1f + DiagnosticsHeight(pt) + pad * 0.5f;
+            float music = MusicHeight(pt) + 1f + SourceHeight(oneInner, pt);
+            float rest = ChordHeight(chordMode, oneInner, pt) + 1f + HandsHeight(pt) + 1f + DiagnosticsHeight(pt);
+            float oneHeight = pad + music + 1f + rest + pad * 0.5f;
             bool twoColumns = area.y + oneHeight > safe.yMax - k_Gap * pt && area.width >= 480f * pt;
 
             if (!twoColumns)
@@ -233,69 +285,127 @@ namespace GuitarAR
                 GuitarUI.Fill(sheet, 20f * pt, GuitarUI.PanelStrong);
                 GuitarUI.Block(sheet);
                 float x = sheet.x + pad, y = sheet.y + pad;
-                y = DrawAssist(x, y, oneInner, pt);
+                y = DrawMusic(x, y, oneInner, pt);
                 y = Separator(x, y, oneInner);
-                y = DrawPairs(x, y, oneInner, pt);
+                y = DrawSource(x, y, oneInner, pt);
                 y = Separator(x, y, oneInner);
                 y = DrawChordMode(x, y, oneInner, chordMode, pt);
+                y = Separator(x, y, oneInner);
+                y = DrawHands(x, y, oneInner, pt);
                 y = Separator(x, y, oneInner);
                 DrawDiagnosticsSwitch(x, y, oneInner, pt);
                 return sheet.yMax;
             }
 
             float inner = (area.width - pad * 3f) * 0.5f;
+            float left = pad + MusicHeight(pt) + 1f + SourceHeight(inner, pt) + 1f + HandsHeight(pt);
             float right = pad + ChordHeight(chordMode, inner, pt) + 1f + DiagnosticsHeight(pt);
-            var wide = new Rect(area.x, area.y, area.width, Mathf.Max(pad + pairs, right) + pad * 0.5f);
+            var wide = new Rect(area.x, area.y, area.width, Mathf.Max(left, right) + pad * 0.5f);
             GuitarUI.Fill(wide, 20f * pt, GuitarUI.PanelStrong);
             GuitarUI.Block(wide);
             float leftX = wide.x + pad, rightX = leftX + inner + pad, top = wide.y + pad;
-            float ly = DrawAssist(leftX, top, inner, pt);
+            float ly = DrawMusic(leftX, top, inner, pt);
             ly = Separator(leftX, ly, inner);
-            DrawPairs(leftX, ly, inner, pt);
+            ly = DrawSource(leftX, ly, inner, pt);
+            ly = Separator(leftX, ly, inner);
+            DrawHands(leftX, ly, inner, pt);
             float ry = DrawChordMode(rightX, top, inner, chordMode, pt);
             ry = Separator(rightX, ry, inner);
             DrawDiagnosticsSwitch(rightX, ry, inner, pt);
             return wide.yMax;
         }
 
-        static float AssistHeight(float pt) => 52f * pt;
-        static float PairsHeight(float pt) => 12f * pt + 24f * pt + 34f * pt + 44f * pt;
+        static float MusicHeight(float pt) => 4f * pt + 24f * pt + 34f * pt + 4f * pt + 32f * pt + 44f * pt;
+        static float SourceHeight(float inner, float pt) => 12f * pt + 22f * pt + 32f * pt + 4f * pt + GuitarUI.TextHeight(k_SourceHelp[1], inner, 11f) + 10f * pt;
+        static float HandsHeight(float pt) => 44f * pt + 44f * pt + 44f * pt;
         static float ChordHeight(int chordMode, float inner, float pt) => 12f * pt + 22f * pt + 34f * pt + 6f * pt + GuitarUI.TextHeight(k_ChordModeHelp[chordMode], inner, 11f) + 12f * pt;
-        static float DiagnosticsHeight(float pt) => 48f * pt;
+        float DiagnosticsHeight(float pt) => m_Diagnostics ? 48f * pt + 44f * pt : 48f * pt;
 
         static Vector2 SwitchSize(float pt) => new Vector2(50f * pt, 30f * pt);
 
-        float DrawAssist(float x, float y, float inner, float pt)
+        /// <summary>A label with a note under it and a switch on the right, 44 points tall. Returns the switch's state.</summary>
+        static bool SwitchRow(float x, float y, float inner, string label, string note, bool on, float pt)
         {
             var size = SwitchSize(pt);
-            GuitarUI.Label(new Rect(x, y + 4f * pt, inner - size.x, 22f * pt), "Помощь боя", 15f, GuitarUI.Text, true, TextAnchor.MiddleLeft);
-            GuitarUI.Label(new Rect(x, y + 26f * pt, inner - size.x - 8f * pt, 18f * pt), "Быстрый взмах = целый удар", 11f, GuitarUI.TextDim, false, TextAnchor.MiddleLeft);
-            bool assist = GuitarUI.Switch(new Rect(x + inner - size.x, y + (52f * pt - size.y) * 0.5f, size.x, size.y), GuitarHandPlayer.StrumAssist);
-            if (assist != GuitarHandPlayer.StrumAssist)
-                GuitarHandPlayer.StrumAssist = assist;
-            return y + AssistHeight(pt);
+            GuitarUI.Label(new Rect(x, y + 3f * pt, inner - size.x, 20f * pt), label, 13f, GuitarUI.Text, true, TextAnchor.MiddleLeft);
+            if (note != null)
+                GuitarUI.Label(new Rect(x, y + 22f * pt, inner - size.x - 8f * pt, 18f * pt), note, 11f, GuitarUI.TextDim, false, TextAnchor.MiddleLeft);
+            return GuitarUI.Switch(new Rect(x + inner - size.x, y + (44f * pt - size.y) * 0.5f, size.x, size.y), on);
         }
 
-        /// <summary>How quickly the strokes of a pattern's pair follow each other, and whether they follow the player's tempo.</summary>
-        float DrawPairs(float x, float y, float inner, float pt)
+        /// <summary>Tempo (60-160), the pattern for Easy, and the metronome.</summary>
+        float DrawMusic(float x, float y, float inner, float pt)
+        {
+            y += 4f * pt;
+            float bpm = m_Music != null ? m_Music.Bpm : 90f;
+            GuitarUI.Label(new Rect(x, y, inner, 24f * pt), "Темп", 15f, GuitarUI.Text, true, TextAnchor.MiddleLeft);
+            GuitarUI.Label(new Rect(x, y, inner, 24f * pt), $"{bpm:0} уд/мин", 12f, GuitarUI.Accent, true, TextAnchor.MiddleRight);
+            y += 24f * pt;
+            float chosen = GuitarUI.Slider(new Rect(x, y, inner, 34f * pt), bpm, GuitarRhythmEngine.MinBpm, GuitarRhythmEngine.MaxBpm);
+            if (m_Music != null && Mathf.Abs(chosen - bpm) >= 0.5f)
+                m_Music.Bpm = chosen;
+            y += 34f * pt + 4f * pt;
+
+            if (m_Music != null)
+            {
+                int pattern = GuitarUI.Segmented(new Rect(x, y, inner, 32f * pt), m_Music.Pattern, m_PatternLabels, 12f);
+                if (pattern != m_Music.Pattern)
+                    m_Music.Pattern = pattern;
+            }
+            y += 32f * pt;
+
+            bool metronome = m_Music != null && m_Music.Metronome;
+            bool on = SwitchRow(x, y, inner, "Метроном", "Щелчки на каждую долю", metronome, pt);
+            if (m_Music != null && on != metronome)
+                m_Music.Metronome = on;
+            return y + 44f * pt;
+        }
+
+        /// <summary>What strikes: the palm or the index fingertip.</summary>
+        float DrawSource(float x, float y, float inner, float pt)
         {
             y += 12f * pt;
-            float step = GuitarHandPlayer.PairStep;
-            GuitarUI.Label(new Rect(x, y, inner, 24f * pt), "Скорость пар", 15f, GuitarUI.Text, true, TextAnchor.MiddleLeft);
-            GuitarUI.Label(new Rect(x, y, inner, 24f * pt), $"{step:0.00} с между ударами", 12f, GuitarUI.Accent, true, TextAnchor.MiddleRight);
-            y += 24f * pt;
-            // Left is quick, right is slow: the gap between the strokes.
-            float chosen = GuitarUI.Slider(new Rect(x, y, inner, 34f * pt), step, GuitarHandPlayer.MinPairStep, GuitarHandPlayer.MaxPairStep);
-            if (Mathf.Abs(chosen - step) > 0.001f)
-                GuitarHandPlayer.PairStep = Mathf.Round(chosen * 100f) / 100f;
-            y += 34f * pt;
+            GuitarUI.Label(new Rect(x, y, inner, 22f * pt), "Бьёт", 15f, GuitarUI.Text, true, TextAnchor.MiddleLeft);
+            y += 22f * pt;
+            int source = (int)GuitarHandPlayer.Source;
+            int chosen = GuitarUI.Segmented(new Rect(x, y, inner, 32f * pt), source, k_SourceLabels, 13f);
+            if (chosen != source)
+                GuitarHandPlayer.Source = (GuitarHandPlayer.MotionSource)chosen;
+            y += 32f * pt + 4f * pt;
+            float help = GuitarUI.TextHeight(k_SourceHelp[1], inner, 11f);
+            GuitarUI.Label(new Rect(x, y, inner, help), k_SourceHelp[chosen], 11f, GuitarUI.TextDim, false, TextAnchor.UpperLeft, true);
+            return y + help + 10f * pt;
+        }
 
-            var size = SwitchSize(pt);
-            GuitarUI.Label(new Rect(x, y + 3f * pt, inner - size.x, 20f * pt), "Под мой темп", 13f, GuitarUI.Text, true, TextAnchor.MiddleLeft);
-            GuitarUI.Label(new Rect(x, y + 22f * pt, inner - size.x - 8f * pt, 18f * pt), "Немного подстраивается под тебя", 11f, GuitarUI.TextDim, false, TextAnchor.MiddleLeft);
-            bool follow = GuitarUI.Switch(new Rect(x + inner - size.x, y + (44f * pt - size.y) * 0.5f, size.x, size.y), GuitarHandPlayer.PairFollowsTempo);
-            if (follow != GuitarHandPlayer.PairFollowsTempo)
-                GuitarHandPlayer.PairFollowsTempo = follow;
+        /// <summary>Left-handed mode, swapping the hands' roles, and the calibration.</summary>
+        float DrawHands(float x, float y, float inner, float pt)
+        {
+            bool lefty = SwitchRow(x, y, inner, "Левша", "Бой левой рукой, гитара зеркально", GuitarHandPlayer.LeftHanded, pt);
+            if (lefty != GuitarHandPlayer.LeftHanded)
+                GuitarHandPlayer.LeftHanded = lefty;
+            y += 44f * pt;
+            bool swap = SwitchRow(x, y, inner, "Поменять руки", "Если путаются: бой и аккорды местами", GuitarHandPlayer.SwapHands, pt);
+            if (swap != GuitarHandPlayer.SwapHands)
+                GuitarHandPlayer.SwapHands = swap;
+            y += 44f * pt;
+
+            if (m_Hands != null)
+            {
+                float resetWidth = 92f * pt;
+                var calibrate = new Rect(x, y + 5f * pt, inner - resetWidth - 6f * pt, 34f * pt);
+                if (GuitarUI.Button(calibrate, m_Hands.IsCalibrating ? "Отменить калибровку" : "Калибровка (10 с)", 13f, m_Hands.IsCalibrating, 12f * pt))
+                {
+                    if (m_Hands.IsCalibrating)
+                        m_Hands.CancelCalibration();
+                    else
+                    {
+                        m_Hands.StartCalibration();
+                        m_SettingsOpen = false;
+                    }
+                }
+                if (GuitarUI.Button(new Rect(calibrate.xMax + 6f * pt, calibrate.y, resetWidth, calibrate.height), "Сбросить", 12f, false, 12f * pt))
+                    m_Hands.ResetCalibration();
+            }
             return y + 44f * pt;
         }
 
@@ -332,6 +442,20 @@ namespace GuitarAR
                 catch (System.Exception)
                 {
                 }
+                if (!diagnostics)
+                    GuitarDiagnosticsRecorder.Stop();
+            }
+            if (!m_Diagnostics)
+                return;
+
+            // For developers only: hand joints and events to a file, never video.
+            bool recording = SwitchRow(x, y + 48f * pt, inner, "Запись жестов в файл", "Точки рук и события, без видео", GuitarDiagnosticsRecorder.IsRecording, pt);
+            if (recording != GuitarDiagnosticsRecorder.IsRecording)
+            {
+                if (recording)
+                    GuitarDiagnosticsRecorder.Start();
+                else
+                    GuitarDiagnosticsRecorder.Stop();
             }
         }
 
@@ -345,7 +469,7 @@ namespace GuitarAR
         /// <summary>What to do next, fading in and out. Returns its bottom (or the top it was given, when hidden).</summary>
         float DrawHint(Rect area, float pt)
         {
-            string hint = m_SettingsOpen ? null : (m_Switcher != null ? m_Switcher.Hint() : null) ?? GuitarStrummer.Hint;
+            string hint = m_SettingsOpen ? null : CurrentHint();
             if (Event.current.type == EventType.Repaint)
             {
                 float step = Time.unscaledDeltaTime / k_HintFadeSeconds;
@@ -376,9 +500,45 @@ namespace GuitarAR
             return banner.yMax;
         }
 
+        /// <summary>
+        /// What to tell the player now: the calibration's step, what just happened (started,
+        /// stopped and why), what the camera mode needs, then how to play in this mode.
+        /// </summary>
+        string CurrentHint()
+        {
+            string calibration = m_Hands != null ? m_Hands.CalibrationHint : null;
+            if (calibration != null)
+                return calibration;
+            if (m_Music != null && m_Music.LastChange != null && Time.unscaledTime - m_Music.LastChangeTime < k_ChangeSeconds)
+                return m_Music.LastChange;
+            string mode = m_Switcher != null ? m_Switcher.Hint() : null;
+            if (mode != null || !AnyPlayable() || m_Music == null || m_Hands == null)
+                return mode;
+
+            bool lefty = GuitarHandPlayer.LeftHanded != GuitarHandPlayer.SwapHands;
+            string strum = lefty ? "левой" : "правой", chord = lefty ? "Правой" : "Левой";
+            if (m_Hands.StrummingHand == GuitarHandPlayer.HandState.NotSeen)
+                return $"Покажи обе руки: {strum} бьёшь, {chord.ToLower()} выбираешь аккорд";
+            bool gestures = m_Hands.ChordMode == GuitarChordReader.Mode.Gestures;
+            switch (m_Music.Mode)
+            {
+                case PlayMode.Easy:
+                    if (m_Music.IsPlaying)
+                        return GuitarStrummer.HasPlayed && Time.unscaledTime - m_Music.LastChangeTime < 8f && gestures
+                            ? $"{chord}: 1–4 пальца = Am, C, G, F. Стоп: кулак или ■"
+                            : null;
+                    return $"Взмахни {strum} рукой над струнами — бой начнётся сам";
+                case PlayMode.Assisted:
+                    return GuitarStrummer.HasPlayed ? null : "Сам: каждый взмах — удар, приложение подровняет его к доле";
+                default:
+                    return GuitarStrummer.HasPlayed ? null : "Сам: каждый взмах вниз или вверх — один удар";
+            }
+        }
+
         void DrawDiagnostics(Rect area, float pt)
         {
-            string text = GuitarStrummer.Diagnostics;
+            string text = GuitarStrummer.Diagnostics + (m_Music != null ? "\n" + m_Music.DiagnosticText : "")
+                + (GuitarDiagnosticsRecorder.IsRecording ? "\nзапись: " + GuitarDiagnosticsRecorder.FilePath : "");
             string selfie = m_Switcher != null ? m_Switcher.SelfieDiagnostic : null;
             if (!string.IsNullOrEmpty(selfie))
                 text += "\n" + selfie;
@@ -427,7 +587,8 @@ namespace GuitarAR
                 if (gestures)
                 {
                     GuitarUI.Label(new Rect(chip.x, chip.y + 6f * pt, chip.width, 28f * pt), m_ChordLabels[i], 20f, ink, true);
-                    GuitarUI.Label(new Rect(chip.x, chip.y + 34f * pt, chip.width, 16f * pt), GuitarChordReader.GestureHint(i), 10f, selected ? GuitarUI.OnAccent : GuitarUI.TextDim);
+                    string gesture = GuitarChordReader.GestureHint(i) ?? "кнопка";
+                    GuitarUI.Label(new Rect(chip.x, chip.y + 34f * pt, chip.width, 16f * pt), gesture, 9.5f, selected ? GuitarUI.OnAccent : GuitarUI.TextDim);
                 }
                 else
                 {
@@ -440,24 +601,28 @@ namespace GuitarAR
 
         // ---- Over the camera image ----
 
-        /// <summary>A ring on the right index fingertip: green when it plays, red when the finger is down.</summary>
+        /// <summary>
+        /// A ring on the point that strikes (the palm, bigger, or the index fingertip): green when
+        /// it plays, red when paused (a fist, or the finger down).
+        /// </summary>
         void DrawFingertip(float pt)
         {
-            var state = m_Hands.RightHand;
+            var state = m_Hands.StrummingHand;
             if (state == GuitarHandPlayer.HandState.NotSeen)
                 return;
-            var tip = m_Hands.Fingertip;
+            var tip = m_Hands.StrikePoint;
             var center = new Vector2(tip.x, Screen.height - tip.y);
+            float scale = m_Hands.StrikingWithPalm ? 1.6f : 1f;
             if (state == GuitarHandPlayer.HandState.Ready)
             {
-                GuitarUI.Ring(center, 34f * pt, GuitarUI.Good);
+                GuitarUI.Ring(center, 34f * pt * scale, GuitarUI.Good);
                 GuitarUI.Dot(center, 9f * pt, GuitarUI.Good);
             }
             else
             {
                 var red = GuitarUI.Bad;
                 red.a = 0.75f;
-                GuitarUI.Ring(center, 28f * pt, red);
+                GuitarUI.Ring(center, 28f * pt * scale, red);
             }
         }
 

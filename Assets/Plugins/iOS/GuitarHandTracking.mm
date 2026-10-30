@@ -6,7 +6,7 @@
 // Unity calls GuitarHands_Process every frame; it starts a detection on the newest camera frame
 // unless one is still running. The camera image is stored sideways (the sensor is landscape), so
 // Vision is told which way is up as the image is shown, and sees hands upright, as it was trained. GuitarHands_Get copies out the latest result: for each hand, the
-// joints below as (x, y, confidence), with x and y in normalized screen coordinates
+// 21 joints below as (x, y, confidence), with x and y in normalized screen coordinates
 // (0..1, origin top left), already matched to how the camera image is shown on screen.
 
 // AR Foundation's ARKit session native pointer points at this.
@@ -17,7 +17,7 @@ typedef struct
 } GuitarARNativeSession;
 
 static const int kMaxHands = 2;
-static const int kJointCount = 12;
+static const int kJointCount = 21;
 
 static float s_Points[kMaxHands * kJointCount * 3];
 static int s_Chirality[kMaxHands];
@@ -32,20 +32,29 @@ static NSObject* s_Lock;
 
 static NSArray<VNHumanHandPoseObservationJointName>* Joints()
 {
-    // Order must match GuitarHandPlayer.Joint.
+    // Order must match GuitarAR.HandJoint (MediaPipe's order).
     return @[
         VNHumanHandPoseObservationJointNameWrist,
+        VNHumanHandPoseObservationJointNameThumbCMC,
+        VNHumanHandPoseObservationJointNameThumbMP,
+        VNHumanHandPoseObservationJointNameThumbIP,
         VNHumanHandPoseObservationJointNameThumbTip,
         VNHumanHandPoseObservationJointNameIndexMCP,
         VNHumanHandPoseObservationJointNameIndexPIP,
-        VNHumanHandPoseObservationJointNameIndexTip,
-        VNHumanHandPoseObservationJointNameMiddlePIP,
-        VNHumanHandPoseObservationJointNameMiddleTip,
-        VNHumanHandPoseObservationJointNameRingPIP,
-        VNHumanHandPoseObservationJointNameRingTip,
-        VNHumanHandPoseObservationJointNameLittlePIP,
-        VNHumanHandPoseObservationJointNameLittleTip,
         VNHumanHandPoseObservationJointNameIndexDIP,
+        VNHumanHandPoseObservationJointNameIndexTip,
+        VNHumanHandPoseObservationJointNameMiddleMCP,
+        VNHumanHandPoseObservationJointNameMiddlePIP,
+        VNHumanHandPoseObservationJointNameMiddleDIP,
+        VNHumanHandPoseObservationJointNameMiddleTip,
+        VNHumanHandPoseObservationJointNameRingMCP,
+        VNHumanHandPoseObservationJointNameRingPIP,
+        VNHumanHandPoseObservationJointNameRingDIP,
+        VNHumanHandPoseObservationJointNameRingTip,
+        VNHumanHandPoseObservationJointNameLittleMCP,
+        VNHumanHandPoseObservationJointNameLittlePIP,
+        VNHumanHandPoseObservationJointNameLittleDIP,
+        VNHumanHandPoseObservationJointNameLittleTip,
     ];
 }
 
@@ -183,7 +192,7 @@ extern "C" void GuitarHands_Process(void* nativeSession, float viewWidth, float 
     });
 }
 
-// Copies the latest hands into points (room for maxHands * 12 * 3 floats) and chirality (-1 left,
+// Copies the latest hands into points (room for maxHands * 21 * 3 floats) and chirality (-1 left,
 // 1 right, 0 unknown) and returns how many were found. timestamp is the camera frame's time, so
 // the caller can tell a new result.
 extern "C" int GuitarHands_Get(float* points, int* chirality, int maxHands, double* timestamp)
