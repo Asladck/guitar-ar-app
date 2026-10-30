@@ -114,15 +114,17 @@ namespace GuitarAR
             right = Vector3.ProjectOnPlane(right, up).normalized;
             var forward = Vector3.Cross(right, up);
 
+            // A left-handed player holds the mirror image: neck to their right, body to their left.
             float angle = m_NeckAngle * Mathf.Deg2Rad;
-            float side = Mirrored ? 1f : -1f;
+            bool lefty = GuitarHandPlayer.LeftHanded;
+            float side = Mirrored != lefty ? 1f : -1f;
             var neck = (right * (side * Mathf.Cos(angle)) + up * Mathf.Sin(angle)).normalized;
 
             // Guitar space: +Y is the face, +Z runs up the neck, the origin is the back of the lower bout.
             rotation = Quaternion.LookRotation(neck, forward);
             // Offsets are for a full-size guitar; shrink them with it.
             float size = BaseSize * SizeScale;
-            position = belly + (right * k_RightOffset + forward * k_ForwardOffset - neck * k_BodyCenterZ) * size;
+            position = belly + (right * (lefty ? -k_RightOffset : k_RightOffset) + forward * k_ForwardOffset - neck * k_BodyCenterZ) * size;
             return true;
         }
 
@@ -137,7 +139,7 @@ namespace GuitarAR
             // Overshoot slightly on the way in so it "pops", and shrink smoothly on the way out.
             float scale = show ? EaseOutBack(m_Visibility) : Mathf.SmoothStep(0f, 1f, m_Visibility);
             var baseScale = m_BaseScale * SizeScale;
-            if (Mirrored)
+            if (Mirrored != GuitarHandPlayer.LeftHanded)
                 baseScale.x = -baseScale.x;
             m_Guitar.transform.localScale = baseScale * scale;
 

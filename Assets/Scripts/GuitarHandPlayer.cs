@@ -6,232 +6,131 @@ using UnityEngine.XR.ARSubsystems;
 namespace GuitarAR
 {
     /// <summary>
-    /// Play the guitar with your real right hand in front of the camera: with the index finger raised,
-    /// move it across the virtual strings. A quick sweep over the strings is a strum (down or up,
-    /// by direction), a slow pass over a string plucks it. With the index finger down, hand
-    /// movement is ignored. Hands come from Apple Vision on the AR camera image (iOS only).
+    /// Turns the hands in front of the camera into musical events. Hands come from Apple Vision
+    /// on the AR camera image (iOS only, Plugins/iOS/GuitarHandTracking.mm): 21 joints each, a
+    /// new set per processed camera frame. Each set is handled once, with the camera frame's own
+    /// time, never re-used on later video frames:
+    /// - the hands get their roles (strumming and chord hand: <see cref="GuitarHandRoles"/>,
+    ///   with the front camera's mirror, left-handed mode and the manual swap);
+    /// - the strumming hand's palm (or index fingertip) is put in the guitar's own coordinates,
+    ///   smoothed (One Euro) and given to the <see cref="GuitarStrikeDetector"/>, whose strikes
+    ///   go to <see cref="GuitarMusic"/> as events;
+    /// - the chord hand's gesture goes to the <see cref="GuitarChordReader"/>;
+    /// - a fist on the strumming hand pauses strikes, and held, stops the music.
+    /// A hand that isn't seen, or whose joints aren't trusted, stops giving events at once; when
+    /// it's back its movement starts a new history, so nothing is made up across the gap.
     /// </summary>
     public class GuitarHandPlayer : MonoBehaviour
     {
-        // In the order the native plugin reports them.
-        enum Joint { Wrist, ThumbTip, IndexMCP, IndexPIP, IndexTip, MiddlePIP, MiddleTip, RingPIP, RingTip, LittlePIP, LittleTip, IndexDIP }
+        public enum MotionSource { Palm, IndexFinger }
+
+        public enum HandState { NotSeen, Paused, Ready }
 
         const int k_MaxHands = 2;
-        const int k_JointCount = 12;
-        const int k_RightHand = 1;              // Vision's chirality for a right hand.
-        const float k_MinConfidence = 0.2f;
-        const float k_TipConfidence = 0.3f;     // Below this the index tip is guessed from the joint before it.
-        const float k_TipFromDip = 0.8f;        // The fingertip's last bone, as a share of the one before it.
-        const float k_RaiseRatio = 1.2f;        // Wrist-to-tip vs wrist-to-middle-knuckle above which the index counts as raised...
-        const float k_LowerRatio = 1.05f;       // ...and below which it counts as lowered again (in between, it stays as it was).
-        const float k_StrumSpeed = 0.8f;        // Screen heights per second; faster passes are strums.
-        const float k_SameStrumCooldown = 0.15f;  // Seconds before another strum in the same direction...
-        const float k_OtherStrumCooldown = 0.06f; // ...or in the other direction (down-up strumming is quick).
-        const float k_MaxGap = 0.4f;            // Seconds; a fingertip not seen for longer starts a new movement.
-        const float k_BridgeOvershoot = 0.3f;   // Strings count as this much longer past the bridge, where people strum.
-        const float k_PluckDeadband = 0.004f;   // Fraction of screen height; smaller moves are tracking jitter.
+        const int k_JointCount = GuitarHandPose.JointCount;
+        const float k_TipConfidence = 0.3f;     // Below this the index tip isn't trusted for strikes.
+        const float k_TipFromDip = 0.8f;        // The fingertip's last bone, as a share of the one before it (for the ring only).
+        const int k_TipBackFrames = 5;          // Frames the fingertip must be seen again before strikes go back to it from the palm.
+        const float k_StopFistSeconds = 0.4f;   // A fist held this long stops Easy.
+        const float k_MinGuitarPixels = 20f;    // A guitar shorter on screen than this can't be played.
+        // A guitar that moves this much on screen between two hand detections has jumped (a new
+        // pose, a new person): the hand's movement relative to it would be made up, so it starts over.
+        const float k_GuitarJump = 0.12f;       // Guitar lengths.
+        const float k_GuitarResize = 0.15f;     // Share of its length.
+        const float k_GuitarTurn = 12f;         // Degrees.
 
-        const float k_AssistStrumSpeed = 0.6f;  // With strum help on, passes at least this fast are strums, slower ones plucks.
-        const float k_AssistMargin = 1.5f;      // With strum help on, the strum zone reaches this many string gaps past the outer strings.
-        const string k_AssistKey = "GuitarAR.StrumAssist";
-        const string k_PatternKey = "GuitarAR.StrumPattern";
-        const float k_PatternRestart = 1.5f;    // Seconds without a strike after which a strumming pattern starts over.
+        // One Euro filter on the strumming hand, in guitar lengths. Started from minCutoff 1 Hz and
+        // beta 0, then beta raised until a swing at about 2 lengths a second lags under 0.06 lengths
+        // (checked on simulated tracking in Tools/logic-tests); the speed's own cutoff 5 Hz lets
+        // the smoothing open within a couple of frames.
+        public const float FilterMinCutoff = 1f;
+        public const float FilterBeta = 6f;
+        public const float FilterSpeedCutoff = 5f;
 
-        enum Stroke { Bass, Down, Up, Mute }
+        const string k_ChordModeKey = "GuitarAR.ChordMode";
+        const string k_SourceKey = "GuitarAR.MotionSource";
+        const string k_LeftHandedKey = "GuitarAR.LeftHanded";
+        const string k_SwapKey = "GuitarAR.SwapHands";
+        const string k_StrikeKey = "GuitarAR.Strike.";
 
-        /// <summary>
-        /// A strumming pattern as written on a rhythm grid: each stroke sits on a slot of the bar.
-        /// Strokes on neighbouring slots come too quickly to hit one by one, so they form a group,
-        /// and one strike plays the whole group in time.
-        /// </summary>
-        struct Pattern
-        {
-            public string Name;
-            public Stroke[] Strokes;
-            public int[] Slots;        // The slot of each stroke.
-            public int Length;         // Slots in a bar.
-            public int SlotsPerBeat;
-
-            public Pattern(string name, int length, int slotsPerBeat, string grid)
-            {
-                Name = name;
-                Length = length;
-                SlotsPerBeat = slotsPerBeat;
-                var strokes = new System.Collections.Generic.List<Stroke>();
-                var slots = new System.Collections.Generic.List<int>();
-                for (int slot = 0; slot < grid.Length; slot++)
-                {
-                    switch (grid[slot])
-                    {
-                        case 'D': strokes.Add(Stroke.Down); slots.Add(slot); break;
-                        case 'U': strokes.Add(Stroke.Up); slots.Add(slot); break;
-                        case 'X': strokes.Add(Stroke.Mute); slots.Add(slot); break;
-                        case 'B': strokes.Add(Stroke.Bass); slots.Add(slot); break;
-                    }
-                }
-                Strokes = strokes.ToArray();
-                Slots = slots.ToArray();
-            }
-
-            /// <summary>The stroke after the group that starts at stroke index start.</summary>
-            public int GroupEnd(int start)
-            {
-                int end = start + 1;
-                while (end < Strokes.Length && Slots[end] == Slots[end - 1] + 1)
-                    end++;
-                return end;
-            }
-        }
-
-        // D = down, U = up, X = muted down (глушение), B = bass, . = rest; one character per slot.
-        static readonly Pattern[] k_Patterns =
-        {
-            // Plays whatever the hand does.
-            new Pattern("Свободный", 1, 1, ""),
-            // Eighths, «раз-и-два-и-три-и-четыре-и»: ↓ _ ✕ ↑ _ ↑ ✕ ↑. Strikes: ↓, ✕↑, ↑✕↑.
-            new Pattern("Шестёрка", 8, 2, "D.XU.UXU"),
-            // Triplets, the plain version without muting: ↓ _ ↓ | _ ↑ ↑ | _ ↑ ↓ | _ ↓ ↑.
-            // Strikes: ↓, ↓, ↑↑, ↑↓, ↓↑.
-            new Pattern("Восьмёрка", 12, 3, "D.D.UU.UD.DU"),
-        };
-
-        // Rhythm: the player's tempo is learned from their strikes. With strum help on, a strike
-        // that comes a little early is held back to land on the beat.
-        const int k_TempoSamples = 4;
-        const float k_DefaultSlot = 0.15f;     // Seconds per slot until the player's tempo is known.
-        // Seconds between the strokes of a group: the player's choice, or (following their tempo)
-        // their slot, kept within this share of the choice either way.
-        public const float MinPairStep = 0.08f;
-        public const float MaxPairStep = 0.3f;
-        const float k_DefaultPairStep = 0.15f;
-        const float k_PairTempoRange = 0.3f;
-        const string k_PairStepKey = "GuitarAR.PairStep";
-        const string k_PairTempoKey = "GuitarAR.PairFollowsTempo";
-        const float k_MinSlot = 0.07f;         // Shortest and longest slot that count towards the tempo.
-        const float k_MaxSlot = 0.5f;
-        const float k_MaxRhythmDelay = 0.07f;  // Seconds; the most a strike is held back.
-        // How far from when a group is due (in slots) a strike may come to play it: the next group...
-        const float k_NextGroupSlots = 1.25f;
-        const float k_NextGroupShare = 0.6f;   // ...or this share of the slots to it, if that's more...
-        const float k_OtherGroupSlots = 1f;    // ...and another group, the player having got there unseen.
-
-        readonly float[] m_SlotSamples = new float[k_TempoSamples];
-        int m_SlotSampleCount;
-        float m_Slot;                           // The player's tempo: seconds per slot, 0 while unknown.
-        double m_LastSounded = double.NegativeInfinity;
-        double m_BarStart;
-        int m_PreviousSlot = -1;
-        double m_GroupBusyUntil = double.NegativeInfinity;
-
-        // Later strokes of a group, waiting for their time.
-        struct PendingStroke
-        {
-            public double Time;
-            public GuitarStrings Guitar;
-            public Stroke Stroke;
-            public float Volume;
-        }
-
-        readonly System.Collections.Generic.List<PendingStroke> m_Pending = new System.Collections.Generic.List<PendingStroke>();
-
-        static int s_Pattern;
-        int m_PatternStep;
-
-        static string s_Diagnostic = "рука: -";
-        static bool s_Assist = true;
-        static float s_PairStep = k_DefaultPairStep;
-        static bool s_PairFollowsTempo = true;
+        static MotionSource s_Source = MotionSource.Palm;
+        static bool s_LeftHanded;
+        static bool s_Swapped;
+        static string s_Diagnostic = "руки: -";
 
         readonly float[] m_Points = new float[k_MaxHands * k_JointCount * 3];
         readonly int[] m_Chirality = new int[k_MaxHands];
+        readonly GuitarHandPose[] m_Poses = { new GuitarHandPose(), new GuitarHandPose() };
+        readonly float[] m_Along = new float[k_MaxHands];
         double m_LastTimestamp;
-        ARSession m_Session;
-        ARCameraManager m_CameraManager;
-        readonly GuitarChordReader m_ChordReader = new GuitarChordReader();
-        const string k_ChordModeKey = "GuitarAR.ChordMode";
-
-        // The right hand's index fingertip, in screen pixels: as tracked, and with its jitter
-        // smoothed for slow moves (fast ones would lag).
-        bool m_HasTip;
-        bool m_Raised;
-        Vector2 m_Tip;
-        double m_TipTime;
-        readonly GuitarPointFilter m_TipFilter = new GuitarPointFilter(1.5f, 5f, 1f);
-        // The ring on screen: lighter smoothing and a quicker speed, so it can be carried on to
-        // where the finger is now (tuned on simulated tracking: a third of the error while moving).
-        readonly GuitarPointFilter m_RingFilter = new GuitarPointFilter(3f, 20f, 8f);
-        float m_TipConfidence;
         double m_ShownTime;                     // Camera time of the frame on screen.
         float m_FrameRate;                      // Hand detections per second.
-        float m_LastStrumTime = float.NegativeInfinity;
-        bool m_LastStrumDown;
+        ARSession m_Session;
+        ARCameraManager m_CameraManager;
+        GuitarMusic m_Music;
 
-        public enum HandState { NotSeen, FingerDown, Ready }
+        readonly GuitarChordReader m_ChordReader = new GuitarChordReader();
+        readonly StrikeSettings m_Defaults = new StrikeSettings();
+        StrikeSettings m_Settings;
+        GuitarStrikeDetector m_Detector;
+        readonly GuitarOneEuroFilter m_Filter = new GuitarOneEuroFilter(FilterMinCutoff, FilterBeta, FilterSpeedCutoff);
+        readonly GuitarGestureHold m_FistHold = new GuitarGestureHold(k_StopFistSeconds);
+        GuitarCalibrator m_Calibrator;
+        string m_CalibrationResult;
+        float m_CalibrationResultTime = float.NegativeInfinity;
 
-        /// <summary>A line for the on-screen diagnostics.</summary>
+        // The guitar on screen at the last detection: its bridge end, unit axes along and across
+        // the strings, and its length, in pixels.
+        bool m_HasGuitar;
+        Vector2 m_Origin, m_Along1, m_Across1;
+        float m_Length;
+
+        // The strumming hand.
+        HandState m_State = HandState.NotSeen;
+        bool m_UsingPalm = true;                 // In finger mode, false while the fingertip is trusted.
+        int m_TipBackCount;
+        bool m_FingerUp = true;
+        readonly GuitarPointFilter m_RingFilter = new GuitarPointFilter(3f, 20f, 8f);
+        bool m_ChordSeen;
+        string m_LastReset = "-";
+
+        /// <summary>A few lines for the on-screen diagnostics.</summary>
         public static string DiagnosticText => s_Diagnostic;
 
-        public static int PatternCount => k_Patterns.Length;
-
-        public static string PatternName(int pattern) => k_Patterns[pattern].Name;
-
-        /// <summary>Strum help: quick passes through a wide zone strum the whole chord.</summary>
-        public static bool StrumAssist
+        /// <summary>What strikes: the palm's centre (easier) or the index fingertip (more precise).</summary>
+        public static MotionSource Source
         {
-            get => s_Assist;
+            get => s_Source;
             set
             {
-                s_Assist = value;
-                Save(k_AssistKey, value ? 1 : 0);
+                s_Source = value;
+                Save(k_SourceKey, (int)value);
             }
         }
 
-        /// <summary>Seconds between the quick strokes of a pattern's group (its pairs), as set by the player.</summary>
-        public static float PairStep
+        /// <summary>Left-handed: strum with the left hand and wear the guitar the other way round.</summary>
+        public static bool LeftHanded
         {
-            get => s_PairStep;
+            get => s_LeftHanded;
             set
             {
-                s_PairStep = Mathf.Clamp(value, MinPairStep, MaxPairStep);
-                try
-                {
-                    PlayerPrefs.SetFloat(k_PairStepKey, s_PairStep);
-                }
-                catch (System.Exception)
-                {
-                }
+                s_LeftHanded = value;
+                Save(k_LeftHandedKey, value ? 1 : 0);
             }
         }
 
-        /// <summary>Whether a group's strokes follow the player's tempo, around <see cref="PairStep"/>.</summary>
-        public static bool PairFollowsTempo
+        /// <summary>The hands' roles swapped by hand, e.g. if the tracker mixes them up.</summary>
+        public static bool SwapHands
         {
-            get => s_PairFollowsTempo;
+            get => s_Swapped;
             set
             {
-                s_PairFollowsTempo = value;
-                Save(k_PairTempoKey, value ? 1 : 0);
+                s_Swapped = value;
+                Save(k_SwapKey, value ? 1 : 0);
             }
         }
 
-        /// <summary>The strumming pattern; choosing one starts it from its first stroke.</summary>
-        public int CurrentPattern
-        {
-            get => s_Pattern;
-            set
-            {
-                if (value == s_Pattern || value < 0 || value >= k_Patterns.Length)
-                    return;
-                s_Pattern = value;
-                m_PatternStep = 0;
-                m_PreviousSlot = -1;
-                m_GroupBusyUntil = double.NegativeInfinity;
-                m_Pending.Clear();
-                Save(k_PatternKey, value);
-            }
-        }
-
-        /// <summary>How the left hand picks the chord.</summary>
+        /// <summary>How the chord hand picks the chord.</summary>
         public GuitarChordReader.Mode ChordMode
         {
             get => m_ChordReader.CurrentMode;
@@ -244,59 +143,26 @@ namespace GuitarAR
 
         public GuitarChordReader ChordReader => m_ChordReader;
 
-        /// <summary>Whether the right hand is seen, and whether its index finger is up to play.</summary>
-        public HandState RightHand => !m_HasTip ? HandState.NotSeen : m_Raised ? HandState.Ready : HandState.FingerDown;
+        /// <summary>Whether the strumming hand is seen, and whether it can strike now (not a fist, finger up).</summary>
+        public HandState StrummingHand => m_State;
+
+        /// <summary>Whether the chord hand was seen in the last detection.</summary>
+        public bool ChordHandSeen => m_ChordSeen;
 
         /// <summary>
-        /// The right index fingertip in screen pixels (origin bottom left), while it's seen: where
-        /// it is in the camera image on screen now. Finding the hand takes a frame or two, so the
-        /// last place found is carried on along the finger's movement.
+        /// Where the strumming point is on screen now (pixels, origin bottom left), while it's
+        /// seen. Finding the hand takes a frame or two, so the last place found is carried on
+        /// along its movement.
         /// </summary>
-        public Vector2 Fingertip => m_RingFilter.Predict(m_ShownTime, 0.7f, 0.1f, 0.3f);
+        public Vector2 StrikePoint => m_RingFilter.Predict(m_ShownTime, 0.7f, 0.1f, 0.3f);
 
-        /// <summary>
-        /// The pattern's strokes as symbols, one entry per group that a single strike plays, and
-        /// which group the next strike plays. No groups for free strumming.
-        /// </summary>
-        public int PatternGroups(System.Collections.Generic.List<string> groups)
-        {
-            groups.Clear();
-            var pattern = k_Patterns[s_Pattern];
-            for (int start = 0; start < pattern.Strokes.Length;)
-            {
-                int end = pattern.GroupEnd(start);
-                var group = new System.Text.StringBuilder();
-                for (int i = start; i < end; i++)
-                    group.Append(Symbol(pattern.Strokes[i]));
-                groups.Add(group.ToString());
-                start = end;
-            }
+        /// <summary>Whether strikes come from the palm right now (in finger mode, while the fingertip is lost).</summary>
+        public bool StrikingWithPalm => m_UsingPalm;
 
-            // Which group the step is at, counted in groups.
-            bool restarts = Time.time - m_LastStrumTime > k_PatternRestart;
-            int next = 0;
-            for (int start = 0; !restarts && start < m_PatternStep && start < pattern.Strokes.Length; start = pattern.GroupEnd(start))
-                next++;
-            return next;
-        }
+        /// <summary>The detector's settings now (calibrated, or the starting values).</summary>
+        public StrikeSettings Settings => m_Settings;
 
-        /// <summary>
-        /// The player's tempo in beats per minute, and whether this moment is on a beat. False
-        /// while the tempo isn't known or strum help is off.
-        /// </summary>
-        public bool TryGetBeat(out int beatsPerMinute, out bool onBeat)
-        {
-            beatsPerMinute = 0;
-            onBeat = false;
-            var pattern = k_Patterns[s_Pattern];
-            if (!s_Assist || m_Slot <= 0f || Time.time - m_LastStrumTime > k_PatternRestart || pattern.Strokes.Length == 0)
-                return false;
-            float beat = m_Slot * pattern.SlotsPerBeat;
-            float phase = (float)((Time.timeAsDouble - m_BarStart) / beat);
-            onBeat = phase - Mathf.Floor(phase) < 0.2f;
-            beatsPerMinute = Mathf.RoundToInt(60f / beat);
-            return true;
-        }
+        public bool IsCalibrating => m_Calibrator != null;
 
         static void Save(string key, int value)
         {
@@ -311,27 +177,121 @@ namespace GuitarAR
 
         void Awake()
         {
+            m_Music = GetComponent<GuitarMusic>();
+            if (m_Music == null)
+                m_Music = gameObject.AddComponent<GuitarMusic>();
+            m_Settings = m_Defaults.Clone();
             try
             {
-                s_Assist = PlayerPrefs.GetInt(k_AssistKey, 1) != 0;
-                s_PairStep = Mathf.Clamp(PlayerPrefs.GetFloat(k_PairStepKey, k_DefaultPairStep), MinPairStep, MaxPairStep);
-                s_PairFollowsTempo = PlayerPrefs.GetInt(k_PairTempoKey, 1) != 0;
-                s_Pattern = Mathf.Clamp(PlayerPrefs.GetInt(k_PatternKey, 0), 0, k_Patterns.Length - 1);
-                m_ChordReader.CurrentMode = (GuitarChordReader.Mode)Mathf.Clamp(PlayerPrefs.GetInt(k_ChordModeKey, 0), 0, 2);
+                s_Source = (MotionSource)Mathf.Clamp(PlayerPrefs.GetInt(k_SourceKey, 0), 0, 1);
+                s_LeftHanded = PlayerPrefs.GetInt(k_LeftHandedKey, 0) != 0;
+                s_Swapped = PlayerPrefs.GetInt(k_SwapKey, 0) != 0;
+                m_ChordReader.CurrentMode = (GuitarChordReader.Mode)Mathf.Clamp(PlayerPrefs.GetInt(k_ChordModeKey, (int)GuitarChordReader.Mode.Gestures), 0, 2);
+                if (PlayerPrefs.HasKey(k_StrikeKey + "Band"))
+                {
+                    m_Settings.Band = PlayerPrefs.GetFloat(k_StrikeKey + "Band", m_Settings.Band);
+                    m_Settings.MinTravel = PlayerPrefs.GetFloat(k_StrikeKey + "MinTravel", m_Settings.MinTravel);
+                    m_Settings.MinSpeed = PlayerPrefs.GetFloat(k_StrikeKey + "MinSpeed", m_Settings.MinSpeed);
+                    m_Settings.LineOffset = PlayerPrefs.GetFloat(k_StrikeKey + "LineOffset", m_Settings.LineOffset);
+                }
             }
             catch (System.Exception)
             {
-                s_Assist = true;
+            }
+            m_Detector = new GuitarStrikeDetector(m_Settings);
+        }
+
+        // ---- Calibration ----
+
+        /// <summary>Starts the short calibration: both hands shown, then a few swings.</summary>
+        public void StartCalibration()
+        {
+            if (m_Music != null)
+                m_Music.Stop("калибровка");
+            m_Calibrator = new GuitarCalibrator();
+            m_CalibrationResult = null;
+        }
+
+        public void CancelCalibration()
+        {
+            m_Calibrator = null;
+            m_CalibrationResult = null;
+        }
+
+        /// <summary>Puts the starting values back.</summary>
+        public void ResetCalibration()
+        {
+            ApplySettings(m_Defaults.Clone());
+            try
+            {
+                foreach (var name in new[] { "Band", "MinTravel", "MinSpeed", "LineOffset" })
+                    PlayerPrefs.DeleteKey(k_StrikeKey + name);
+            }
+            catch (System.Exception)
+            {
             }
         }
 
+        void ApplySettings(StrikeSettings settings)
+        {
+            m_Settings = settings;
+            m_Detector.Settings = settings;
+            m_Detector.Lost("новые настройки");
+        }
+
+        /// <summary>What the calibration asks for now, or its result for a moment after; null otherwise.</summary>
+        public string CalibrationHint
+        {
+            get
+            {
+                if (m_Calibrator == null)
+                    return Time.time - m_CalibrationResultTime < 3f ? m_CalibrationResult : null;
+                if (m_Calibrator.Current == GuitarCalibrator.Phase.ShowHands)
+                    return "Калибровка 1/2: покажи обе руки и подержи их секунду";
+                return $"Калибровка 2/2: сделай {GuitarCalibrator.SwingsWanted} удобных взмаха вверх-вниз над струнами ({Mathf.Min(m_Calibrator.Swings, GuitarCalibrator.SwingsWanted)}/{GuitarCalibrator.SwingsWanted})";
+            }
+        }
+
+        void FeedCalibration(double timestamp, bool strumSeen, float d)
+        {
+            m_Calibrator.Sample(timestamp, strumSeen, d, m_ChordSeen, m_Defaults);
+            if (m_Calibrator.Current == GuitarCalibrator.Phase.Done)
+            {
+                var s = m_Calibrator.Result;
+                ApplySettings(s);
+                try
+                {
+                    PlayerPrefs.SetFloat(k_StrikeKey + "Band", s.Band);
+                    PlayerPrefs.SetFloat(k_StrikeKey + "MinTravel", s.MinTravel);
+                    PlayerPrefs.SetFloat(k_StrikeKey + "MinSpeed", s.MinSpeed);
+                    PlayerPrefs.SetFloat(k_StrikeKey + "LineOffset", s.LineOffset);
+                }
+                catch (System.Exception)
+                {
+                }
+                m_CalibrationResult = "Калибровка готова: взмахни, чтобы играть";
+                GuitarDiagnosticsRecorder.Event(timestamp, $"calibrated band={s.Band:0.000} travel={s.MinTravel:0.000} speed={s.MinSpeed:0.00} line={s.LineOffset:0.000} noise={m_Calibrator.Noise:0.0000}");
+            }
+            else if (m_Calibrator.Current == GuitarCalibrator.Phase.Failed)
+            {
+                m_CalibrationResult = "Калибровка не удалась: настройки прежние, попробуй ещё раз";
+            }
+            else
+            {
+                return;
+            }
+            m_CalibrationResultTime = Time.time;
+            m_Calibrator = null;
+        }
+
+        // ---- Tracking ----
+
         void Update()
         {
-            PlayPending();
 #if UNITY_IOS && !UNITY_EDITOR
             if (!AnyPlayable())
             {
-                m_HasTip = false;
+                StrumHandLost("гитары нет");
                 return;
             }
 
@@ -346,7 +306,7 @@ namespace GuitarAR
 
             int count = GuitarHands_Get(m_Points, m_Chirality, k_MaxHands, out double timestamp);
             if (timestamp == m_LastTimestamp)
-                return;
+                return;  // Nothing new: the last detection was already used.
             if (m_LastTimestamp > 0 && timestamp > m_LastTimestamp)
                 m_FrameRate = Mathf.Lerp(m_FrameRate, 1f / (float)(timestamp - m_LastTimestamp), 0.1f);
             m_LastTimestamp = timestamp;
@@ -356,475 +316,221 @@ namespace GuitarAR
 
         void OnHands(int count, double timestamp)
         {
-            // Vision reads the front camera's image the other way round, so its right is your left.
+            for (int h = 0; h < count; h++)
+            {
+                var pose = m_Poses[h];
+                for (int j = 0; j < k_JointCount; j++)
+                {
+                    int i = (h * k_JointCount + j) * 3;
+                    // Normalized, origin top left, to screen pixels, origin bottom left.
+                    pose.X[j] = m_Points[i] * Screen.width;
+                    pose.Y[j] = (1f - m_Points[i + 1]) * Screen.height;
+                    pose.Confidence[j] = m_Points[i + 2];
+                }
+            }
+
+            UpdateGuitarFrame();
+            for (int h = 0; h < count; h++)
+                m_Along[h] = m_HasGuitar && m_Poses[h].TryPalm(out float px, out float py) ? Along(new Vector2(px, py)) : float.NaN;
+
             if (m_CameraManager == null && Camera.main != null)
                 m_CameraManager = Camera.main.GetComponent<ARCameraManager>();
             bool frontCamera = m_CameraManager != null && m_CameraManager.currentFacingDirection == CameraFacingDirection.User;
-            int rightHand = frontCamera ? -k_RightHand : k_RightHand;
+            GuitarHandRoles.Assign(count, m_Chirality, m_Along, frontCamera, s_LeftHanded, s_Swapped, out int strum, out int chord);
+            GuitarDiagnosticsRecorder.Hands(timestamp, count, m_Poses, m_Chirality, strum, chord);
 
-            int right = -1, left = -1;
-            for (int h = 0; h < count; h++)
-            {
-                if (m_Chirality[h] == rightHand && right < 0)
-                    right = h;
-                else if (m_Chirality[h] == -rightHand && left < 0)
-                    left = h;
-            }
-
-            // The left hand picks the chord.
-            if (left >= 0)
-                ReadLeftHand(left, timestamp);
+            m_ChordSeen = chord >= 0;
+            if (chord >= 0)
+                m_ChordReader.Read(m_Poses[chord], timestamp);
             else
                 m_ChordReader.Lost();
 
-            if (right < 0 || !TryRead(right, out var tip, out float ratio, out bool ratioKnown))
-            {
-                // A blurred or briefly missed hand keeps its last fingertip for a moment.
-                if (m_HasTip && timestamp - m_TipTime > k_MaxGap)
-                {
-                    m_HasTip = false;
-                    m_TipFilter.Reset();
-                    m_RingFilter.Reset();
-                }
-                s_Diagnostic = $"рук: {count}, правая: не видно, {m_FrameRate:0} кадр/с\n{m_ChordReader.Diagnostic}";
-                return;
-            }
+            if (strum >= 0)
+                ReadStrummingHand(m_Poses[strum], timestamp);
+            else
+                StrumHandLost("рука не видна", timestamp);
 
-            // Hysteresis, so the finger doesn't flicker between raised and lowered mid-strum.
-            bool wasRaised = m_Raised;
-            if (ratioKnown)
-            {
-                if (ratio > k_RaiseRatio)
-                    m_Raised = true;
-                else if (ratio < k_LowerRatio)
-                    m_Raised = false;
-            }
-
-            if (m_HasTip && timestamp - m_TipTime > k_MaxGap)
-            {
-                m_TipFilter.Reset();
-                m_RingFilter.Reset();
-            }
-            m_RingFilter.Filter(tip, timestamp);
-            var smoothFrom = m_TipFilter.Value;
-            var smoothTip = m_TipFilter.Filter(tip, timestamp);
-            if (m_HasTip && (m_Raised || wasRaised) && timestamp - m_TipTime <= k_MaxGap)
-                Move(m_Tip, tip, smoothFrom, smoothTip, (float)(timestamp - m_TipTime));
-
-            m_HasTip = true;
-            m_Tip = tip;
-            m_TipTime = timestamp;
-            s_Diagnostic = $"рук: {count}, правая: палец {(m_Raised ? "поднят" : "опущен")} ({ratio:0.00}), кончик {tip:0} ({m_TipConfidence:0.00}), {m_FrameRate:0} кадр/с\n{m_ChordReader.Diagnostic}";
+            UpdateDiagnostic(count, timestamp);
         }
 
-        static readonly Joint[] k_FingerTips = { Joint.IndexTip, Joint.MiddleTip, Joint.RingTip, Joint.LittleTip };
-        static readonly Joint[] k_FingerKnuckles = { Joint.IndexPIP, Joint.MiddlePIP, Joint.RingPIP, Joint.LittlePIP };
-
-        readonly Vector2[] m_LeftTips = new Vector2[GuitarChordReader.FingerCount];
-        readonly Vector2[] m_LeftKnuckles = new Vector2[GuitarChordReader.FingerCount];
-        readonly bool[] m_LeftSeen = new bool[GuitarChordReader.FingerCount];
-
-        void ReadLeftHand(int hand, double timestamp)
+        /// <summary>The guitar's place on screen now; resets the movement if it jumped since the last detection.</summary>
+        void UpdateGuitarFrame()
         {
-            bool wristSeen = TryGetJoint(hand, Joint.Wrist, out var wrist);
-            for (int f = 0; f < GuitarChordReader.FingerCount; f++)
-            {
-                m_LeftSeen[f] = TryGetJoint(hand, k_FingerTips[f], out m_LeftTips[f])
-                    & TryGetJoint(hand, k_FingerKnuckles[f], out m_LeftKnuckles[f]);
-            }
-            m_ChordReader.Read(wrist, wristSeen, m_LeftTips, m_LeftKnuckles, m_LeftSeen, timestamp);
-        }
-
-        /// <summary>
-        /// The fingertip moved from one place to another (as tracked, and smoothed). A fast move
-        /// is taken as tracked, so a strum isn't late; a slow one smoothed, so the tracking's
-        /// jitter doesn't graze strings.
-        /// </summary>
-        void Move(Vector2 trackedFrom, Vector2 trackedTo, Vector2 smoothFrom, Vector2 smoothTo, float seconds)
-        {
+            var guitar = PlayableGuitar();
             var cam = Camera.main;
-            float speed = (trackedTo - trackedFrom).magnitude / Screen.height / Mathf.Max(seconds, 1e-3f);
-            bool fast = speed >= Mathf.Min(k_AssistStrumSpeed, k_StrumSpeed);
-            var from = fast ? trackedFrom : smoothFrom;
-            var to = fast ? trackedTo : smoothTo;
-            float distance = (to - from).magnitude / Screen.height;
-            if (cam == null || distance <= 0f)
+            bool had = m_HasGuitar;
+            var origin = m_Origin;
+            var along = m_Along1;
+            float length = m_Length;
+            m_HasGuitar = false;
+            if (guitar == null || cam == null)
+                return;
+            int last = GuitarStrings.StringCount - 1;
+            if (!guitar.TryGetScreenSegment(0, cam, out var lowBridge, out var lowNut)
+                || !guitar.TryGetScreenSegment(last, cam, out var highBridge, out var highNut))
                 return;
 
-            float volume = Mathf.Clamp(0.5f + 0.2f * speed, 0.5f, 1f);
-
-            foreach (var guitar in GuitarStrings.Active)
-            {
-                if (!guitar.IsPlayable)
-                    continue;
-                if (s_Assist ? AssistedMove(guitar, cam, from, to, speed, distance, volume) : FreeMove(guitar, cam, from, to, speed, distance, volume))
-                    return;
-            }
-        }
-
-        /// <summary>
-        /// Strum help: a quick pass anywhere through a wide zone around the strings strums the whole
-        /// chord, so grazing a string on the way doesn't make stray notes; only slow passes pluck.
-        /// </summary>
-        bool AssistedMove(GuitarStrings guitar, Camera cam, Vector2 from, Vector2 to, float speed, float distance, float volume)
-        {
-            if (!TryGetStrings(guitar, cam, s_Bridges, s_Nuts))
-                return false;
-
-            var low = Vector2.Lerp(s_Bridges[0], s_Nuts[0], 0.2f);
-            var high = Vector2.Lerp(s_Bridges[GuitarStrings.StringCount - 1], s_Nuts[GuitarStrings.StringCount - 1], 0.2f);
-            var gap = (high - low) / (GuitarStrings.StringCount - 1);
-
-            if (speed >= k_AssistStrumSpeed)
-            {
-                // The strum zone: the strings plus imaginary ones past the outer strings.
-                int lines = GuitarStrings.StringCount + 2;
-                for (int line = 0; line < lines; line++)
-                {
-                    Vector2 bridge, nut;
-                    if (line == 0)
-                    {
-                        bridge = s_Bridges[0] - gap * k_AssistMargin;
-                        nut = s_Nuts[0] - gap * k_AssistMargin;
-                    }
-                    else if (line == lines - 1)
-                    {
-                        bridge = s_Bridges[GuitarStrings.StringCount - 1] + gap * k_AssistMargin;
-                        nut = s_Nuts[GuitarStrings.StringCount - 1] + gap * k_AssistMargin;
-                    }
-                    else
-                    {
-                        bridge = s_Bridges[line - 1];
-                        nut = s_Nuts[line - 1];
-                    }
-
-                    if (GuitarStrummer.Intersect(from, to, bridge + (bridge - nut) * k_BridgeOvershoot, nut, out _))
-                    {
-                        StrumOnce(guitar, AcrossStrings(from, to, gap), volume);
-                        return true;
-                    }
-                }
-                return false;
-            }
-
-            if (distance < k_PluckDeadband)
-                return false;
-            int nearest = FirstCrossed(from, to);
-            if (nearest < 0)
-                return false;
-            GuitarStrummer.PluckString(guitar, nearest, volume);
-            return true;
-        }
-
-        /// <summary>Without strum help: strings crossed fast (or several at once) strum, one crossed slowly plucks.</summary>
-        bool FreeMove(GuitarStrings guitar, Camera cam, Vector2 from, Vector2 to, float speed, float distance, float volume)
-        {
-            if (!TryGetStrings(guitar, cam, s_Bridges, s_Nuts))
-                return false;
-
-            int crossed = 0;
-            for (int i = 0; i < GuitarStrings.StringCount; i++)
-            {
-                if (GuitarStrummer.Intersect(from, to, s_Bridges[i] + (s_Bridges[i] - s_Nuts[i]) * k_BridgeOvershoot, s_Nuts[i], out _))
-                    crossed++;
-            }
-            if (crossed == 0)
-                return false;
-
-            if (speed >= k_StrumSpeed || crossed >= 3)
-            {
-                var low = Vector2.Lerp(s_Bridges[0], s_Nuts[0], 0.2f);
-                var high = Vector2.Lerp(s_Bridges[GuitarStrings.StringCount - 1], s_Nuts[GuitarStrings.StringCount - 1], 0.2f);
-                StrumOnce(guitar, AcrossStrings(from, to, high - low), volume);
-            }
-            else if (distance >= k_PluckDeadband)
-            {
-                GuitarStrummer.PluckString(guitar, FirstCrossed(from, to), volume);
-            }
-            return true;
-        }
-
-        static readonly Vector2[] s_Bridges = new Vector2[GuitarStrings.StringCount];
-        static readonly Vector2[] s_Nuts = new Vector2[GuitarStrings.StringCount];
-
-        static bool TryGetStrings(GuitarStrings guitar, Camera cam, Vector2[] bridges, Vector2[] nuts)
-        {
-            for (int i = 0; i < GuitarStrings.StringCount; i++)
-            {
-                if (!guitar.TryGetScreenSegment(i, cam, out bridges[i], out nuts[i]))
-                    return false;
-            }
-            return true;
-        }
-
-        /// <summary>The first string (in s_Bridges/s_Nuts) the movement crosses, or -1.</summary>
-        static int FirstCrossed(Vector2 from, Vector2 to)
-        {
-            int first = -1;
-            float firstAlong = float.MaxValue;
-            for (int i = 0; i < GuitarStrings.StringCount; i++)
-            {
-                var bridge = s_Bridges[i] + (s_Bridges[i] - s_Nuts[i]) * k_BridgeOvershoot;
-                if (GuitarStrummer.Intersect(from, to, bridge, s_Nuts[i], out float along) && along < firstAlong)
-                {
-                    firstAlong = along;
-                    first = i;
-                }
-            }
-            return first;
-        }
-
-        /// <summary>
-        /// True for a down strum: movement from the low E side towards the high E, counting only the
-        /// part of the movement across the strings, not along them.
-        /// </summary>
-        static bool AcrossStrings(Vector2 from, Vector2 to, Vector2 lowToHigh)
-        {
-            var along = s_Nuts[0] - s_Bridges[0];
-            var across = along.sqrMagnitude > 1e-6f ? lowToHigh - along * (Vector2.Dot(lowToHigh, along) / along.sqrMagnitude) : lowToHigh;
-            return Vector2.Dot(to - from, across) > 0f;
-        }
-
-        void StrumOnce(GuitarStrings guitar, bool down, float volume)
-        {
-            float cooldown = down == m_LastStrumDown ? k_SameStrumCooldown : k_OtherStrumCooldown;
-            if (Time.time - m_LastStrumTime < cooldown)
+            var bridge = (lowBridge + highBridge) * 0.5f;
+            var nut = (lowNut + highNut) * 0.5f;
+            m_Length = (nut - bridge).magnitude;
+            if (m_Length < k_MinGuitarPixels)
                 return;
-            float sinceLast = Time.time - m_LastStrumTime;
+            m_Origin = bridge;
+            m_Along1 = (nut - bridge) / m_Length;
+            // Across: from the low E to the high E, square to the strings.
+            var lowToHigh = (highBridge + highNut) * 0.5f - (lowBridge + lowNut) * 0.5f;
+            var across = lowToHigh - m_Along1 * Vector2.Dot(lowToHigh, m_Along1);
+            if (across.sqrMagnitude < 1e-6f)
+                across = new Vector2(-m_Along1.y, m_Along1.x);
+            m_Across1 = across.normalized;
+            m_HasGuitar = true;
 
-            var pattern = k_Patterns[s_Pattern];
-            if (pattern.Strokes.Length == 0)
+            if (had && ((m_Origin - origin).magnitude / m_Length > k_GuitarJump
+                || Mathf.Abs(m_Length - length) / m_Length > k_GuitarResize
+                || Vector2.Angle(m_Along1, along) > k_GuitarTurn))
             {
-                m_LastStrumTime = Time.time;
-                m_LastStrumDown = down;
-                float freeDelay = Rhythm(sinceLast, m_PreviousSlot < 0 ? 0 : 1);
-                m_PreviousSlot = 0;
-                GuitarStrummer.Strum(guitar, down, volume, freeDelay);
+                ResetMovement("гитара сдвинулась");
+            }
+        }
+
+        float Along(Vector2 point) => Vector2.Dot(point - m_Origin, m_Along1) / m_Length;
+
+        float Across(Vector2 point) => Vector2.Dot(point - m_Origin, m_Across1) / m_Length;
+
+        void ResetMovement(string reason)
+        {
+            m_Detector.Lost(reason);
+            m_Filter.Reset();
+            m_LastReset = reason;
+        }
+
+        void ReadStrummingHand(GuitarHandPose pose, double timestamp)
+        {
+            if (!m_HasGuitar)
+            {
+                StrumHandLost("гитара не видна", timestamp);
                 return;
             }
 
-            // The player's strike sets the timing; the pattern decides how it sounds. A strike plays
-            // a whole group of quick strokes, spaced at the player's tempo.
-            if (sinceLast > k_PatternRestart || m_PatternStep >= pattern.Strokes.Length)
+            // Where it strikes from: the palm, or the index tip while it's seen well.
+            bool palmSeen = pose.TryPalm(out float palmX, out float palmY);
+            bool tipSeen = pose.Seen(HandJoint.IndexTip, k_TipConfidence) && pose.Seen(HandJoint.IndexPIP);
+            bool usePalm;
+            if (s_Source == MotionSource.Palm)
             {
-                m_PatternStep = 0;
-                m_PreviousSlot = -1;
-                m_GroupBusyUntil = double.NegativeInfinity;
+                usePalm = true;
             }
-            // While a group plays, the hand is making its strokes: those passes are already heard.
-            if (Time.timeAsDouble < m_GroupBusyUntil)
+            else
+            {
+                m_TipBackCount = tipSeen ? m_TipBackCount + 1 : 0;
+                usePalm = m_UsingPalm ? m_TipBackCount < k_TipBackFrames : !tipSeen;
+            }
+            if (usePalm != m_UsingPalm)
+            {
+                // A different point moves differently: start its history over, without a strike.
+                ResetMovement(usePalm ? "палец потерян, бьёт ладонь" : "палец снова виден");
+                m_UsingPalm = usePalm;
+            }
+            if (usePalm ? !palmSeen : !tipSeen)
+            {
+                StrumHandLost("точки руки не уверенные", timestamp);
                 return;
-            // A strike the wrong way plays nothing, also before the pattern has begun: it waits
-            // for its first stroke.
-            int step = NextGroup(pattern, down, sinceLast);
-            if (step < 0)
-                return;  // The hand coming back between strokes, as it does when strumming.
-
-            m_LastStrumTime = Time.time;
-            m_LastStrumDown = down;
-            m_PatternStep = step;
-            int slot = pattern.Slots[m_PatternStep];
-            int gap = m_PreviousSlot < 0 ? 0 : (slot - m_PreviousSlot + pattern.Length) % pattern.Length;
-            if (gap == 0 && m_PreviousSlot >= 0)
-                gap = pattern.Length;
-            float delay = Rhythm(sinceLast, gap);
-            if (m_PatternStep == 0)
-                m_BarStart = Time.timeAsDouble + delay;
-
-            // A group is a quick flick of the wrist, as quick as the player chose.
-            float slotSeconds = m_Slot > 0f ? m_Slot : k_DefaultSlot;
-            float groupStep = s_PairFollowsTempo
-                ? Mathf.Clamp(slotSeconds, s_PairStep * (1f - k_PairTempoRange), s_PairStep * (1f + k_PairTempoRange))
-                : s_PairStep;
-            int end = pattern.GroupEnd(m_PatternStep);
-            m_Pending.Clear();  // What's left of the last group gives way to this one.
-            Play(guitar, pattern.Strokes[m_PatternStep], volume, delay);
-            for (int i = m_PatternStep + 1; i < end; i++)
-            {
-                m_Pending.Add(new PendingStroke
-                {
-                    Time = Time.timeAsDouble + delay + (pattern.Slots[i] - slot) * groupStep,
-                    Guitar = guitar,
-                    Stroke = pattern.Strokes[i],
-                    Volume = volume,
-                });
             }
-            // The group's own strokes are already heard; but a slow group mustn't hide the next one.
-            int next = end % pattern.Strokes.Length;
-            int toNext = (pattern.Slots[next] - slot + pattern.Length) % pattern.Length;
-            if (toNext == 0)
-                toNext = pattern.Length;
-            float busy = Mathf.Min((pattern.Slots[end - 1] - slot) * groupStep + 0.5f * slotSeconds, (toNext - 0.5f) * slotSeconds);
-            m_GroupBusyUntil = Time.timeAsDouble + delay + busy;
+            var point = usePalm ? new Vector2(palmX, palmY) : new Vector2(pose.X[(int)HandJoint.IndexTip], pose.Y[(int)HandJoint.IndexTip]);
+            m_RingFilter.Filter(usePalm ? point : RingTip(pose), timestamp);
 
-            m_PreviousSlot = slot;
-            m_PatternStep = end % pattern.Strokes.Length;
+            // A fist (or, striking with the finger, a lowered index) plays nothing; a fist held stops Easy.
+            var gesture = GuitarHandGestures.Read(pose);
+            if (gesture != HandGesture.Unknown)
+            {
+                if (m_FistHold.Update(gesture, timestamp) == HandGesture.Fist && m_Music != null && m_Music.IsPlaying)
+                    m_Music.Stop("кулак");
+            }
+            if (s_Source == MotionSource.IndexFinger)
+            {
+                var index = GuitarHandGestures.Finger(pose, 0, pose.Size());
+                if (index != FingerState.Unknown)
+                    m_FingerUp = index == FingerState.Straight;
+            }
+            else
+            {
+                m_FingerUp = true;
+            }
+            bool paused = gesture == HandGesture.Fist || !m_FingerUp;
+            m_State = paused ? HandState.Paused : HandState.Ready;
+            if (m_Music != null)
+                m_Music.StrummingHandSeen();
+
+            m_Filter.Filter(Across(point), Along(point), timestamp, out float d, out float v);
+            if (m_Calibrator != null)
+            {
+                FeedCalibration(timestamp, true, d);
+                m_Detector.Lost("калибровка");
+                return;
+            }
+            if (paused)
+            {
+                m_Detector.Lost(gesture == HandGesture.Fist ? "кулак" : "палец опущен");
+                return;
+            }
+
+            if (m_Detector.Process(timestamp, d, v))
+            {
+                var strike = m_Detector.LastStrike;
+                GuitarDiagnosticsRecorder.Event(timestamp, $"strike {strike.Direction} at={strike.Time:0.000} speed={strike.Speed:0.00} travel={strike.Travel:0.000}");
+                if (m_Music != null)
+                    m_Music.OnStrike(strike, m_ShownTime - timestamp);
+            }
         }
 
-        /// <summary>
-        /// The group a strike in this direction plays, or -1 if it plays none. A strike goes the way
-        /// of a group's first stroke (a muted stroke is a down stroke). Once the tempo is known, it
-        /// also has to come about when that group is due: the next group, or another one if a
-        /// strike wasn't seen and the player is already further on. Anything else is the hand
-        /// coming back between strokes, as it does when strumming.
-        /// </summary>
-        int NextGroup(Pattern pattern, bool down, float sinceLast)
+        /// <summary>The index fingertip for the ring on screen: carried on from the joint before it when it's blurred.</summary>
+        static Vector2 RingTip(GuitarHandPose pose)
         {
-            bool fits = IsDown(pattern.Strokes[m_PatternStep]) == down;
-            if (m_PreviousSlot < 0 || m_Slot <= 0f)
-                return fits ? m_PatternStep : -1;
-
-            float elapsed = sinceLast / m_Slot;
-            int best = -1;
-            float bestMiss = float.MaxValue;
-            for (int start = 0; start < pattern.Strokes.Length; start = pattern.GroupEnd(start))
-            {
-                if (IsDown(pattern.Strokes[start]) != down)
-                    continue;
-                int gap = (pattern.Slots[start] - m_PreviousSlot + pattern.Length) % pattern.Length;
-                if (gap == 0)
-                    gap = pattern.Length;
-                float miss = Mathf.Abs(gap - elapsed);
-                // The next group may come later or sooner as the player's tempo drifts.
-                float allowed = start == m_PatternStep ? Mathf.Max(k_NextGroupSlots, k_NextGroupShare * gap) : k_OtherGroupSlots;
-                if (miss <= allowed && (miss < bestMiss || (miss == bestMiss && start == m_PatternStep)))
-                {
-                    best = start;
-                    bestMiss = miss;
-                }
-            }
-            return best;
+            var tip = new Vector2(pose.X[(int)HandJoint.IndexTip], pose.Y[(int)HandJoint.IndexTip]);
+            if (pose.Seen(HandJoint.IndexTip, k_TipConfidence) || !pose.Seen(HandJoint.IndexDIP))
+                return tip;
+            var dip = new Vector2(pose.X[(int)HandJoint.IndexDIP], pose.Y[(int)HandJoint.IndexDIP]);
+            var pip = new Vector2(pose.X[(int)HandJoint.IndexPIP], pose.Y[(int)HandJoint.IndexPIP]);
+            return pose.Seen(HandJoint.IndexPIP) ? dip + (dip - pip) * k_TipFromDip : dip;
         }
 
-        static bool IsDown(Stroke stroke) => stroke != Stroke.Up;
-
-        static void Play(GuitarStrings guitar, Stroke stroke, float volume, float delay)
+        void StrumHandLost(string reason, double timestamp = 0)
         {
-            switch (stroke)
+            if (m_State != HandState.NotSeen)
             {
-                case Stroke.Bass: GuitarStrummer.Bass(guitar, volume, delay); break;
-                case Stroke.Down: GuitarStrummer.Strum(guitar, true, volume, delay); break;
-                case Stroke.Up: GuitarStrummer.Strum(guitar, false, volume * 0.9f, delay); break;
-                case Stroke.Mute: GuitarStrummer.MutedStrum(guitar, volume, delay); break;
+                m_RingFilter.Reset();
+                m_FistHold.Lost();
             }
+            m_State = HandState.NotSeen;
+            ResetMovement(reason);
+            if (m_Calibrator != null && timestamp > 0)
+                FeedCalibration(timestamp, false, 0f);
         }
 
-        void PlayPending()
+        void UpdateDiagnostic(int count, double timestamp)
         {
-            double now = Time.timeAsDouble;
-            for (int i = 0; i < m_Pending.Count; i++)
-            {
-                var pending = m_Pending[i];
-                if (pending.Time > now)
-                    continue;
-                if (pending.Guitar != null && pending.Guitar.IsPlayable)
-                    Play(pending.Guitar, pending.Stroke, pending.Volume, 0f);
-                m_Pending.RemoveAt(i);
-                i--;
-            }
+            string source = s_Source == MotionSource.Palm ? "ладонь" : m_UsingPalm ? "палец→ладонь" : "палец";
+            float age = (float)(m_ShownTime - timestamp) * 1000f;
+            var s = m_Settings;
+            s_Diagnostic = $"трекинг: {m_FrameRate:0} кадр/с, возраст кадра {age:0} мс, рук {count}, бьёт: {source}\n"
+                + $"удар: {m_Detector.State}, отклонено: {m_Detector.LastRejection}, сброс: {m_LastReset}\n"
+                + $"порог: полоса {s.Band:0.000}, ход {s.MinTravel:0.000}, скорость {s.MinSpeed:0.00} дл/с, линия {s.LineOffset:+0.000;-0.000}\n"
+                + m_ChordReader.Diagnostic;
         }
 
-        /// <summary>
-        /// Learns the player's tempo from a strike that comes gapSlots after the previous one (0 if
-        /// unknown) and, with strum help on, says how long to hold it back to land on the beat.
-        /// Only early strikes are nudged (a sound can't be played before the strike), and only a little.
-        /// </summary>
-        float Rhythm(float sinceLastStrike, int gapSlots)
-        {
-            double now = Time.timeAsDouble;
-            if (sinceLastStrike > k_PatternRestart)
-            {
-                m_SlotSampleCount = 0;
-                m_Slot = 0f;
-            }
-            else if (gapSlots > 0)
-            {
-                float slot = sinceLastStrike / gapSlots;
-                if (slot >= k_MinSlot && slot <= k_MaxSlot)
-                {
-                    m_SlotSamples[m_SlotSampleCount % k_TempoSamples] = slot;
-                    m_SlotSampleCount++;
-                    m_Slot = Median();
-                }
-            }
+        // ---- Helpers ----
 
-            float delay = 0f;
-            if (s_Assist && gapSlots > 0 && m_Slot > 0f && m_SlotSampleCount >= 2)
-            {
-                float expected = m_Slot * gapSlots;
-                float early = (float)(m_LastSounded + expected - now);
-                if (early > 0f && early <= Mathf.Min(k_MaxRhythmDelay, expected * 0.25f))
-                    delay = early;
-            }
-            m_LastSounded = now + delay;
-            return delay;
-        }
-
-        float Median()
-        {
-            int n = Mathf.Min(m_SlotSampleCount, k_TempoSamples);
-            var sorted = new float[n];
-            System.Array.Copy(m_SlotSamples, sorted, n);
-            System.Array.Sort(sorted);
-            return n % 2 == 1 ? sorted[n / 2] : 0.5f * (sorted[n / 2 - 1] + sorted[n / 2]);
-        }
-
-        static string Symbol(Stroke stroke)
-        {
-            switch (stroke)
-            {
-                case Stroke.Bass: return "Б";
-                case Stroke.Down: return "↓";
-                case Stroke.Up: return "↑";
-                default: return "×";
-            }
-        }
-
-        bool TryRead(int hand, out Vector2 indexTip, out float ratio, out bool ratioKnown)
-        {
-            ratio = 0f;
-            ratioKnown = false;
-            m_TipConfidence = Confidence(hand, Joint.IndexTip);
-            if (!TryGetJoint(hand, Joint.IndexTip, out indexTip, k_TipConfidence))
-            {
-                // A tip that's blurred or hidden: carry on from the joint before it, along the finger.
-                bool pipSeen = TryGetJoint(hand, Joint.IndexPIP, out var pip);
-                if (!TryGetJoint(hand, Joint.IndexDIP, out var dip, k_TipConfidence))
-                    return false;
-                indexTip = pipSeen ? dip + (dip - pip) * k_TipFromDip : dip;
-            }
-
-            if (TryGetJoint(hand, Joint.Wrist, out var wrist) && TryGetJoint(hand, Joint.IndexPIP, out var knuckle))
-            {
-                float toKnuckle = (knuckle - wrist).magnitude;
-                if (toKnuckle > 1f)
-                {
-                    ratio = (indexTip - wrist).magnitude / toKnuckle;
-                    ratioKnown = true;
-                }
-            }
-            return true;
-        }
-
-        /// <summary>A joint in screen pixels (origin bottom left), if it was seen confidently.</summary>
-        bool TryGetJoint(int hand, Joint joint, out Vector2 position, float minConfidence = k_MinConfidence)
-        {
-            int i = (hand * k_JointCount + (int)joint) * 3;
-            position = new Vector2(m_Points[i] * Screen.width, (1f - m_Points[i + 1]) * Screen.height);
-            return m_Points[i + 2] >= minConfidence;
-        }
-
-        float Confidence(int hand, Joint joint) => m_Points[(hand * k_JointCount + (int)joint) * 3 + 2];
-
-        static bool AnyPlayable()
+        static GuitarStrings PlayableGuitar()
         {
             foreach (var guitar in GuitarStrings.Active)
             {
                 if (guitar.IsPlayable)
-                    return true;
+                    return guitar;
             }
-            return false;
+            return null;
         }
+
+        static bool AnyPlayable() => PlayableGuitar() != null;
 
         static int InterfaceOrientation()
         {

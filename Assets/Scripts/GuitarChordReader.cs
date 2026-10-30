@@ -3,10 +3,13 @@ using UnityEngine;
 namespace GuitarAR
 {
     /// <summary>
-    /// Picks the chord from the left hand. On the neck: where the fingertips sit on the virtual
-    /// fretboard is compared with each chord's fingering, and the closest one wins. With gestures:
-    /// the fingers held up choose the chord. A chord has to hold for a moment before it switches,
-    /// and losing the hand keeps the last chord.
+    /// Picks the chord with the chord hand (the left one, for a right-handed player). With
+    /// gestures (the default): one raised finger is Am, two C, three G, four F; the fingers are
+    /// read from their joint angles (<see cref="GuitarHandGestures"/>) and a gesture must be held
+    /// 150 ms before it switches, so passing through other gestures on the way doesn't. On the
+    /// neck: where the fingertips sit on the virtual fretboard is compared with each chord's
+    /// fingering. Unknown gestures and a lost hand keep the last chord. A chord change is only
+    /// state: the next stroke, whenever the music plays it, uses it.
     /// </summary>
     public class GuitarChordReader
     {
@@ -15,8 +18,8 @@ namespace GuitarAR
         // The four fingers that fret: index, middle, ring, little.
         public const int FingerCount = 4;
 
-        const float k_HoldSeconds = 0.25f;
-        const float k_ExtendedRatio = 1.15f;   // Wrist-to-tip vs wrist-to-middle-knuckle of a straight finger.
+        const float k_NeckHoldSeconds = 0.25f;
+        public const float GestureHoldSeconds = 0.15f;
         const float k_StringWeight = 0.3f;     // Strings are only millimetres apart on screen; trust frets more.
         const float k_MaxCost = 0.6f;          // Mean squared distance (in frets) above which nothing matches.
         const float k_MaxFret = 6f;
@@ -24,26 +27,23 @@ namespace GuitarAR
         // Fingerings in GuitarStrummer's chord order: (string, fret) with string 0 = low E.
         static readonly Vector2Int[][] k_Shapes =
         {
-            new[] { new Vector2Int(1, 2), new Vector2Int(2, 2) },                           // Em
             new[] { new Vector2Int(2, 2), new Vector2Int(3, 2), new Vector2Int(4, 1) },     // Am
             new[] { new Vector2Int(1, 3), new Vector2Int(2, 2), new Vector2Int(4, 1) },     // C
             new[] { new Vector2Int(0, 3), new Vector2Int(1, 2), new Vector2Int(5, 3) },     // G
+            new[] { new Vector2Int(2, 3), new Vector2Int(3, 2), new Vector2Int(4, 1) },     // F (the index bars B and E)
+            new[] { new Vector2Int(1, 2), new Vector2Int(2, 2) },                           // Em
             new[] { new Vector2Int(3, 2), new Vector2Int(4, 3), new Vector2Int(5, 2) },     // D
             new[] { new Vector2Int(1, 2), new Vector2Int(2, 2), new Vector2Int(3, 1) },     // E
         };
 
-        // Fingers up (index, middle, ring, little) for each chord in gesture mode.
-        static readonly bool[][] k_Gestures =
-        {
-            new[] { true, false, false, false },  // Em: index
-            new[] { true, true, false, false },   // Am: index and middle
-            new[] { true, true, true, false },    // C: three
-            new[] { true, true, true, true },     // G: four
-            new[] { true, false, false, true },   // D: index and little
-            new[] { false, false, false, true },  // E: little finger
-        };
+        // The gesture for each chord, in GuitarStrummer's chord order; only the first four have one.
+        static readonly HandGesture[] k_Gestures = { HandGesture.OneFinger, HandGesture.TwoFingers, HandGesture.ThreeFingers, HandGesture.FourFingers };
+        static readonly string[] k_GestureHints = { "1 палец", "2 пальца", "3 пальца", "4 пальца" };
+        static readonly HandJoint[] k_Tips = { HandJoint.IndexTip, HandJoint.MiddleTip, HandJoint.RingTip, HandJoint.LittleTip };
 
-        static readonly string[] k_GestureHints = { "1 палец", "2 пальца", "3 пальца", "4 пальца", "указ.+миз.", "мизинец" };
+        readonly GuitarGestureHold m_GestureHold = new GuitarGestureHold(GestureHoldSeconds);
+        readonly Vector2[] m_Tips = new Vector2[FingerCount];
+        readonly bool[] m_TipSeen = new bool[FingerCount];
 
         readonly Vector2[] m_Positions = new Vector2[FingerCount];   // (string, fret) of each fingertip on the neck.
         readonly bool[] m_OnNeck = new bool[FingerCount];
@@ -53,39 +53,58 @@ namespace GuitarAR
         int m_Candidate = -1;
         double m_CandidateSince;
 
-        public Mode CurrentMode = Mode.Neck;
+        public Mode CurrentMode = Mode.Gestures;
 
         /// <summary>A line for the on-screen diagnostics.</summary>
         public string Diagnostic { get; private set; } = "левая: -";
 
-        public static string GestureHint(int chord) => k_GestureHints[chord];
+        /// <summary>The gesture that picks a chord ("1 палец"), or null if it has none.</summary>
+        public static string GestureHint(int chord) => chord >= 0 && chord < k_GestureHints.Length ? k_GestureHints[chord] : null;
+
+        /// <summary>The gesture seen now and how long it's been held, for the hint on screen.</summary>
+        public HandGesture Shown { get; private set; }
 
         /// <summary>
-        /// Reads one detection of the left hand: fingertips and middle knuckles in screen pixels,
-        /// and whether each was seen.
+        /// Reads one detection of the chord hand (joints in screen pixels, origin bottom left).
         /// </summary>
-        public void Read(Vector2 wrist, bool wristSeen, Vector2[] tips, Vector2[] knuckles, bool[] seen, double timestamp)
+        public void Read(GuitarHandPose pose, double timestamp)
         {
             if (CurrentMode == Mode.Off)
             {
-                Diagnostic = "левая: аккорд кнопками";
+                Diagnostic = "аккорд-рука: аккорд кнопками";
                 return;
             }
 
             string detail;
-            int chord = CurrentMode == Mode.Neck
-                ? MatchNeck(tips, seen, out detail)
-                : MatchGesture(wrist, wristSeen, tips, knuckles, seen, out detail);
-            Diagnostic = $"левая: {detail}";
-            Hold(chord, timestamp);
+            if (CurrentMode == Mode.Neck)
+            {
+                for (int f = 0; f < FingerCount; f++)
+                {
+                    m_TipSeen[f] = pose.Seen(k_Tips[f], 0.2f);
+                    m_Tips[f] = new Vector2(pose.X[(int)k_Tips[f]], pose.Y[(int)k_Tips[f]]);
+                }
+                Hold(MatchNeck(m_Tips, m_TipSeen, out detail), timestamp);
+            }
+            else
+            {
+                Shown = GuitarHandGestures.Read(pose);
+                var confirmed = m_GestureHold.Update(Shown, timestamp);
+                int chord = System.Array.IndexOf(k_Gestures, confirmed);
+                detail = $"жест {Shown}" + (chord >= 0 ? $" → {GuitarStrummer.ChordName(chord)}" : "");
+                if (chord >= 0 && chord != GuitarStrummer.CurrentChord)
+                    GuitarStrummer.SetChord(chord);
+            }
+            Diagnostic = $"аккорд-рука: {detail}";
         }
 
-        /// <summary>The left hand wasn't seen; the last chord stays.</summary>
+        /// <summary>The chord hand wasn't seen; the last chord stays.</summary>
         public void Lost()
         {
             m_Candidate = -1;
+            m_GestureHold.Lost();
+            Shown = HandGesture.Unknown;
             if (CurrentMode != Mode.Off)
-                Diagnostic = "левая: не видно";
+                Diagnostic = "аккорд-рука: не видно";
         }
 
         void Hold(int chord, double timestamp)
@@ -101,44 +120,11 @@ namespace GuitarAR
                 m_CandidateSince = timestamp;
                 return;
             }
-            if (timestamp - m_CandidateSince >= k_HoldSeconds)
+            if (timestamp - m_CandidateSince >= k_NeckHoldSeconds)
             {
                 GuitarStrummer.SetChord(chord);
                 m_Candidate = -1;
             }
-        }
-
-        int MatchGesture(Vector2 wrist, bool wristSeen, Vector2[] tips, Vector2[] knuckles, bool[] seen, out string detail)
-        {
-            detail = "жест не виден";
-            if (!wristSeen)
-                return -1;
-
-            var up = new bool[FingerCount];
-            int raised = 0;
-            for (int f = 0; f < FingerCount; f++)
-            {
-                if (!seen[f])
-                    return -1;
-                float toKnuckle = (knuckles[f] - wrist).magnitude;
-                up[f] = toKnuckle > 1f && (tips[f] - wrist).magnitude > toKnuckle * k_ExtendedRatio;
-                if (up[f])
-                    raised++;
-            }
-
-            detail = $"пальцев поднято {raised}";
-            for (int chord = 0; chord < k_Gestures.Length; chord++)
-            {
-                bool same = true;
-                for (int f = 0; f < FingerCount && same; f++)
-                    same = up[f] == k_Gestures[chord][f];
-                if (same)
-                {
-                    detail += $" → {GuitarStrummer.ChordName(chord)}";
-                    return chord;
-                }
-            }
-            return -1;
         }
 
         int MatchNeck(Vector2[] tips, bool[] seen, out string detail)

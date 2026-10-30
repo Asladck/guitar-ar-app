@@ -30,21 +30,27 @@ namespace GuitarAR
             }
         }
 
+        // The first four are the beginner chords, picked with 1-4 raised fingers; the others only
+        // with the buttons or on the neck. Standard tuning E2 A2 D3 G3 B3 E4.
         static readonly Chord[] k_Chords =
         {
+            new Chord("Am", -1, 0, 2, 2, 1, 0),   // x02210
+            new Chord("C", -1, 3, 2, 0, 1, 0),    // x32010
+            new Chord("G", 3, 2, 0, 0, 0, 3),     // 320003
+            new Chord("F", -1, -1, 3, 2, 1, 1),   // xx3211
             new Chord("Em", 0, 2, 2, 0, 0, 0),
-            new Chord("Am", -1, 0, 2, 2, 1, 0),
-            new Chord("C", -1, 3, 2, 0, 1, 0),
-            new Chord("G", 3, 2, 0, 0, 0, 3),
             new Chord("D", -1, -1, 0, 2, 3, 2),
             new Chord("E", 0, 2, 2, 1, 0, 0),
         };
 
+        /// <summary>How many chords are picked with gestures (the first ones).</summary>
+        public const int GestureChordCount = 4;
+
         const float k_MinVolume = 0.45f;
-        // Seconds from one string to the next in a strum: a whole down strum takes 15-20 ms when
-        // it's fast and hard, about 40 ms when it's slow. Any slower and the chord smears.
-        const float k_FastRoll = 0.0035f;
-        const float k_SlowRoll = 0.008f;
+        // Seconds from one string to the next in a strum: 8-10 ms, so a six-string strum takes
+        // 40-50 ms, harder strums quicker. Earlier 3.5-8 ms; 12 ms was heard as smeared.
+        const float k_FastRoll = 0.008f;
+        const float k_SlowRoll = 0.010f;
         const float k_MaxRoll = 0.05f;
         const float k_Retrigger = 0.04f;      // A string can't be re-plucked sooner than this.
         const float k_AimableSpacing = 0.012f; // Below this string spacing (fraction of screen width), taps strum.
@@ -64,6 +70,7 @@ namespace GuitarAR
         readonly HashSet<int> m_SeenTouches = new HashSet<int>();
         readonly List<(float along, GuitarStrings guitar, int stringIndex)> m_Crossings = new List<(float, GuitarStrings, int)>();
         readonly Dictionary<(GuitarStrings, int), float> m_LastPluck = new Dictionary<(GuitarStrings, int), float>();
+        readonly Dictionary<(GuitarStrings, int), double> m_LastScheduled = new Dictionary<(GuitarStrings, int), double>();
         readonly List<int> m_Ended = new List<int>();
 
         int m_Chord;
@@ -88,8 +95,8 @@ namespace GuitarAR
             PrepareChord(chord);
         }
 
-        /// <summary>A hint for the player, or null once they've played.</summary>
-        public static string Hint => s_Instance != null && !s_Instance.m_HasPlayed && AnyPlayable() ? "Подними указательный палец и проведи рукой по струнам" : null;
+        /// <summary>Whether anything has been played yet.</summary>
+        public static bool HasPlayed => s_Instance != null && s_Instance.m_HasPlayed;
 
         /// <summary>True if a tap here would play the guitar, so it shouldn't also move it.</summary>
         public static bool IsOnStrings(Vector2 screenPosition)
@@ -112,6 +119,7 @@ namespace GuitarAR
             {
                 var go = new GameObject("Guitar Strummer");
                 go.AddComponent<GuitarStrummer>();
+                go.AddComponent<GuitarMusic>();
                 go.AddComponent<GuitarHandPlayer>();
                 go.AddComponent<GuitarHud>();
             }
@@ -142,8 +150,9 @@ namespace GuitarAR
         {
             PlayEvenWhenSilent();
             GuitarSoftLimiter.EnsureOnListener();
-            // Make the first chord's notes now so the first strum doesn't hitch.
-            PrepareChord(m_Chord);
+            // Load and make every chord's notes now, so no strum waits for them.
+            for (int chord = 0; chord < k_Chords.Length; chord++)
+                PrepareChord(chord);
             var config = AudioSettings.GetConfiguration();
             Debug.Log($"[GuitarAR] Audio ready: {config.sampleRate} Hz, {config.speakerMode}, buffer {config.dspBufferSize}");
         }
@@ -153,7 +162,8 @@ namespace GuitarAR
             // Clips made for the old output may be gone or at the wrong sample rate.
             GuitarSynth.ClearCache();
             GuitarSamples.ClearCache();
-            PrepareChord(m_Chord);
+            for (int chord = 0; chord < k_Chords.Length; chord++)
+                PrepareChord(chord);
             Debug.Log($"[GuitarAR] Audio configuration changed (device changed: {deviceWasChanged})");
         }
 
@@ -303,52 +313,47 @@ namespace GuitarAR
         /// <summary>The time between strings in a strum this loud: louder strums are faster.</summary>
         static float Roll(float volume) => Mathf.Lerp(k_SlowRoll, k_FastRoll, Mathf.InverseLerp(0.5f, 1f, volume));
 
-        /// <summary>
-        /// Strums the chosen chord: a down strum rolls from the low E up, an up strum (lighter)
-        /// rolls back over the top four strings.
-        /// </summary>
+        /// <summary>Strums the chosen chord now (or after a delay in seconds).</summary>
         public static void Strum(GuitarStrings guitar, bool down, float volume, float delay = 0f)
         {
-            if (s_Instance == null)
+            if (s_Instance != null)
+                StrumAt(guitar, down ? StrumKind.Down : StrumKind.Up, volume, AudioSettings.dspTime + delay, s_Instance.m_Chord);
+        }
+
+        /// <summary>
+        /// One stroke of a chord at a time on the audio clock: the sounding strings one after
+        /// another, low to high for a down stroke, high to low for an up one (a little lighter),
+        /// or a palm-muted chuck. Each sounding string is played once.
+        /// </summary>
+        public static void StrumAt(GuitarStrings guitar, StrumKind kind, float volume, double start, int chord)
+        {
+            if (s_Instance == null || chord < 0 || chord >= k_Chords.Length)
                 return;
-            float roll = Roll(volume);
-            if (down)
+            var frets = k_Chords[chord].Frets;
+            float roll = kind == StrumKind.Mute ? Roll(volume) * 0.5f : Roll(volume);
+            float level = kind == StrumKind.Up ? volume * 0.85f : kind == StrumKind.Mute ? volume * 0.9f : volume;
+            int n = 0;
+            for (int k = 0; k < GuitarStrings.StringCount; k++)
             {
-                for (int i = 0; i < GuitarStrings.StringCount; i++)
-                    s_Instance.Play(guitar, i, volume, delay + i * roll);
-            }
-            else
-            {
-                for (int i = GuitarStrings.StringCount - 1, n = 0; i >= 2; i--, n++)
-                    s_Instance.Play(guitar, i, volume * 0.8f, delay + n * roll);
+                int i = kind == StrumKind.Up ? GuitarStrings.StringCount - 1 - k : k;
+                if (frets[i] < 0)
+                    continue;
+                s_Instance.PlayAt(guitar, i, frets[i], level, start + n * roll, kind == StrumKind.Mute);
+                n++;
             }
         }
 
-        /// <summary>Plays the chord's bass: its lowest sounding string.</summary>
-        public static void Bass(GuitarStrings guitar, float volume, float delay = 0f)
+        void PlayAt(GuitarStrings guitar, int stringIndex, int fret, float volume, double start, bool muted)
         {
-            if (s_Instance == null)
+            // The same string twice within a few milliseconds would only cut its own note short.
+            var key = (guitar, stringIndex);
+            if (m_LastScheduled.TryGetValue(key, out double last) && System.Math.Abs(start - last) < k_Retrigger)
                 return;
-            var frets = k_Chords[s_Instance.m_Chord].Frets;
-            for (int i = 0; i < frets.Length; i++)
-            {
-                if (frets[i] >= 0)
-                {
-                    s_Instance.Play(guitar, i, volume, delay);
-                    return;
-                }
-            }
-        }
-
-        /// <summary>A down strum damped by the palm (глушение): a short percussive chuck.</summary>
-        public static void MutedStrum(GuitarStrings guitar, float volume, float delay = 0f)
-        {
-            if (s_Instance == null)
-                return;
-            // The palm comes down on all the strings at once, nearly.
-            float roll = Roll(volume) * 0.5f;
-            for (int i = 0; i < GuitarStrings.StringCount; i++)
-                s_Instance.Play(guitar, i, volume * 0.9f, delay + i * roll, true);
+            m_LastScheduled[key] = start;
+            guitar.PluckAt(stringIndex, GuitarSynth.OpenStrings[stringIndex] + fret, volume, start, muted);
+            m_PluckCount++;
+            LastPlayTime = Time.time + Mathf.Max(0f, (float)(start - AudioSettings.dspTime));
+            m_HasPlayed = true;
         }
 
         /// <summary>Plucks one string of the chosen chord.</summary>
