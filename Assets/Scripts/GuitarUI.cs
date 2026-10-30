@@ -205,6 +205,51 @@ namespace GuitarAR
             return Tapped(rect) ? !on : on;
         }
 
+        /// <summary>
+        /// A slider: drag along the track (or tap a place on it) to set a value between min and
+        /// max. Returns the new value.
+        /// </summary>
+        public static float Slider(Rect rect, float value, float min, float max)
+        {
+            Block(rect);
+            int id = GUIUtility.GetControlID(FocusType.Passive);
+            float knob = Mathf.Min(rect.height, 26f * Pt);
+            float left = rect.x + knob * 0.5f, right = rect.xMax - knob * 0.5f;
+            var e = Event.current;
+            switch (e.GetTypeForControl(id))
+            {
+                case EventType.MouseDown:
+                    if (!rect.Contains(e.mousePosition))
+                        break;
+                    GUIUtility.hotControl = id;
+                    value = Mathf.Lerp(min, max, Mathf.InverseLerp(left, right, e.mousePosition.x));
+                    e.Use();
+                    break;
+                case EventType.MouseDrag:
+                    if (GUIUtility.hotControl != id)
+                        break;
+                    value = Mathf.Lerp(min, max, Mathf.InverseLerp(left, right, e.mousePosition.x));
+                    e.Use();
+                    break;
+                case EventType.MouseUp:
+                    if (GUIUtility.hotControl == id)
+                    {
+                        GUIUtility.hotControl = 0;
+                        e.Use();
+                    }
+                    break;
+                case EventType.Repaint:
+                    float x = Mathf.Lerp(left, right, Mathf.InverseLerp(min, max, value));
+                    float thickness = 4f * Pt;
+                    var track = new Rect(left, rect.center.y - thickness * 0.5f, right - left, thickness);
+                    Fill(track, thickness * 0.5f, Track);
+                    Fill(new Rect(left, track.y, x - left, thickness), thickness * 0.5f, Accent);
+                    Dot(new Vector2(x, rect.center.y), knob, Color.white);
+                    break;
+            }
+            return Mathf.Clamp(value, min, max);
+        }
+
         // ---- Making the textures ----
 
         static int ClampRadius(Rect rect, float radius)

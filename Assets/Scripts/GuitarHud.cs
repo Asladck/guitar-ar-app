@@ -100,7 +100,7 @@ namespace GuitarAR
             var row = new Rect(left, safe.y + 4f * pt, width, k_RowHeight * pt);
             float bottom = DrawTopRow(row, playable, pt);
             if (m_SettingsOpen)
-                bottom = DrawSettings(new Rect(left, bottom + k_Gap * pt, width, 0f), pt);
+                bottom = DrawSettings(new Rect(left, bottom + k_Gap * pt, width, 0f), pt, safe);
             else if (playable && m_Hands != null)
                 bottom = DrawRhythm(new Rect(left, bottom + k_Gap * pt, width, 84f * pt), pt);
             bottom = DrawHint(new Rect(left, bottom + k_Gap * pt, width, 0f), pt);
@@ -213,48 +213,115 @@ namespace GuitarAR
             return card.yMax;
         }
 
-        /// <summary>The settings sheet: strum help, how the chord is picked, diagnostics.</summary>
-        float DrawSettings(Rect area, float pt)
+        /// <summary>
+        /// The settings sheet: strum help, the speed of a pattern's pairs, how the chord is picked,
+        /// diagnostics. One column, or two side by side when one would run off the bottom of the
+        /// screen (the phone held sideways). Returns its bottom.
+        /// </summary>
+        float DrawSettings(Rect area, float pt, Rect safe)
         {
             float pad = 14f * pt;
             int chordMode = m_Hands != null ? (int)m_Hands.ChordMode : (int)GuitarChordReader.Mode.Off;
-            string help = k_ChordModeHelp[chordMode];
-            float inner = area.width - pad * 2f;
-            float helpHeight = GuitarUI.TextHeight(help, inner, 11f);
-            var sheet = new Rect(area.x, area.y, area.width, pad + 52f * pt + 1f + 12f * pt + 22f * pt + 34f * pt + 6f * pt + helpHeight + 12f * pt + 1f + 48f * pt + pad * 0.5f);
-            GuitarUI.Fill(sheet, 20f * pt, GuitarUI.PanelStrong);
-            GuitarUI.Block(sheet);
-            float y = sheet.y + pad;
-            var switchSize = new Vector2(50f * pt, 30f * pt);
+            float oneInner = area.width - pad * 2f;
+            float pairs = AssistHeight(pt) + 1f + PairsHeight(pt);
+            float oneHeight = pad + pairs + 1f + ChordHeight(chordMode, oneInner, pt) + 1f + DiagnosticsHeight(pt) + pad * 0.5f;
+            bool twoColumns = area.y + oneHeight > safe.yMax - k_Gap * pt && area.width >= 480f * pt;
 
-            // Strum help.
-            GuitarUI.Label(new Rect(sheet.x + pad, y + 4f * pt, inner - switchSize.x, 22f * pt), "Помощь боя", 15f, GuitarUI.Text, true, TextAnchor.MiddleLeft);
-            GuitarUI.Label(new Rect(sheet.x + pad, y + 26f * pt, inner - switchSize.x - 8f * pt, 18f * pt), "Быстрый взмах по струнам = целый удар", 11f, GuitarUI.TextDim, false, TextAnchor.MiddleLeft);
-            bool assist = GuitarUI.Switch(new Rect(sheet.xMax - pad - switchSize.x, y + (52f * pt - switchSize.y) * 0.5f, switchSize.x, switchSize.y), GuitarHandPlayer.StrumAssist);
+            if (!twoColumns)
+            {
+                var sheet = new Rect(area.x, area.y, area.width, oneHeight);
+                GuitarUI.Fill(sheet, 20f * pt, GuitarUI.PanelStrong);
+                GuitarUI.Block(sheet);
+                float x = sheet.x + pad, y = sheet.y + pad;
+                y = DrawAssist(x, y, oneInner, pt);
+                y = Separator(x, y, oneInner);
+                y = DrawPairs(x, y, oneInner, pt);
+                y = Separator(x, y, oneInner);
+                y = DrawChordMode(x, y, oneInner, chordMode, pt);
+                y = Separator(x, y, oneInner);
+                DrawDiagnosticsSwitch(x, y, oneInner, pt);
+                return sheet.yMax;
+            }
+
+            float inner = (area.width - pad * 3f) * 0.5f;
+            float right = pad + ChordHeight(chordMode, inner, pt) + 1f + DiagnosticsHeight(pt);
+            var wide = new Rect(area.x, area.y, area.width, Mathf.Max(pad + pairs, right) + pad * 0.5f);
+            GuitarUI.Fill(wide, 20f * pt, GuitarUI.PanelStrong);
+            GuitarUI.Block(wide);
+            float leftX = wide.x + pad, rightX = leftX + inner + pad, top = wide.y + pad;
+            float ly = DrawAssist(leftX, top, inner, pt);
+            ly = Separator(leftX, ly, inner);
+            DrawPairs(leftX, ly, inner, pt);
+            float ry = DrawChordMode(rightX, top, inner, chordMode, pt);
+            ry = Separator(rightX, ry, inner);
+            DrawDiagnosticsSwitch(rightX, ry, inner, pt);
+            return wide.yMax;
+        }
+
+        static float AssistHeight(float pt) => 52f * pt;
+        static float PairsHeight(float pt) => 12f * pt + 24f * pt + 34f * pt + 44f * pt;
+        static float ChordHeight(int chordMode, float inner, float pt) => 12f * pt + 22f * pt + 34f * pt + 6f * pt + GuitarUI.TextHeight(k_ChordModeHelp[chordMode], inner, 11f) + 12f * pt;
+        static float DiagnosticsHeight(float pt) => 48f * pt;
+
+        static Vector2 SwitchSize(float pt) => new Vector2(50f * pt, 30f * pt);
+
+        float DrawAssist(float x, float y, float inner, float pt)
+        {
+            var size = SwitchSize(pt);
+            GuitarUI.Label(new Rect(x, y + 4f * pt, inner - size.x, 22f * pt), "Помощь боя", 15f, GuitarUI.Text, true, TextAnchor.MiddleLeft);
+            GuitarUI.Label(new Rect(x, y + 26f * pt, inner - size.x - 8f * pt, 18f * pt), "Быстрый взмах = целый удар", 11f, GuitarUI.TextDim, false, TextAnchor.MiddleLeft);
+            bool assist = GuitarUI.Switch(new Rect(x + inner - size.x, y + (52f * pt - size.y) * 0.5f, size.x, size.y), GuitarHandPlayer.StrumAssist);
             if (assist != GuitarHandPlayer.StrumAssist)
                 GuitarHandPlayer.StrumAssist = assist;
-            y += 52f * pt;
-            Separator(sheet, pad, y);
-            y += 1f + 12f * pt;
+            return y + AssistHeight(pt);
+        }
 
-            // How the left hand picks the chord.
-            GuitarUI.Label(new Rect(sheet.x + pad, y, inner, 22f * pt), "Аккорд выбирает", 15f, GuitarUI.Text, true, TextAnchor.MiddleLeft);
+        /// <summary>How quickly the strokes of a pattern's pair follow each other, and whether they follow the player's tempo.</summary>
+        float DrawPairs(float x, float y, float inner, float pt)
+        {
+            y += 12f * pt;
+            float step = GuitarHandPlayer.PairStep;
+            GuitarUI.Label(new Rect(x, y, inner, 24f * pt), "Скорость пар", 15f, GuitarUI.Text, true, TextAnchor.MiddleLeft);
+            GuitarUI.Label(new Rect(x, y, inner, 24f * pt), $"{step:0.00} с между ударами", 12f, GuitarUI.Accent, true, TextAnchor.MiddleRight);
+            y += 24f * pt;
+            // Left is quick, right is slow: the gap between the strokes.
+            float chosen = GuitarUI.Slider(new Rect(x, y, inner, 34f * pt), step, GuitarHandPlayer.MinPairStep, GuitarHandPlayer.MaxPairStep);
+            if (Mathf.Abs(chosen - step) > 0.001f)
+                GuitarHandPlayer.PairStep = Mathf.Round(chosen * 100f) / 100f;
+            y += 34f * pt;
+
+            var size = SwitchSize(pt);
+            GuitarUI.Label(new Rect(x, y + 3f * pt, inner - size.x, 20f * pt), "Под мой темп", 13f, GuitarUI.Text, true, TextAnchor.MiddleLeft);
+            GuitarUI.Label(new Rect(x, y + 22f * pt, inner - size.x - 8f * pt, 18f * pt), "Немного подстраивается под тебя", 11f, GuitarUI.TextDim, false, TextAnchor.MiddleLeft);
+            bool follow = GuitarUI.Switch(new Rect(x + inner - size.x, y + (44f * pt - size.y) * 0.5f, size.x, size.y), GuitarHandPlayer.PairFollowsTempo);
+            if (follow != GuitarHandPlayer.PairFollowsTempo)
+                GuitarHandPlayer.PairFollowsTempo = follow;
+            return y + 44f * pt;
+        }
+
+        float DrawChordMode(float x, float y, float inner, int chordMode, float pt)
+        {
+            string help = k_ChordModeHelp[chordMode];
+            y += 12f * pt;
+            GuitarUI.Label(new Rect(x, y, inner, 22f * pt), "Аккорд выбирает", 15f, GuitarUI.Text, true, TextAnchor.MiddleLeft);
             y += 22f * pt;
             if (m_Hands != null)
             {
-                int chosen = GuitarUI.Segmented(new Rect(sheet.x + pad, y, inner, 34f * pt), chordMode, k_ChordModeLabels, 13f);
+                int chosen = GuitarUI.Segmented(new Rect(x, y, inner, 34f * pt), chordMode, k_ChordModeLabels, 13f);
                 if (chosen != chordMode)
                     m_Hands.ChordMode = (GuitarChordReader.Mode)chosen;
             }
             y += 34f * pt + 6f * pt;
-            GuitarUI.Label(new Rect(sheet.x + pad, y, inner, helpHeight), help, 11f, GuitarUI.TextDim, false, TextAnchor.UpperLeft, true);
-            y += helpHeight + 12f * pt;
-            Separator(sheet, pad, y);
-            y += 1f;
+            float helpHeight = GuitarUI.TextHeight(help, inner, 11f);
+            GuitarUI.Label(new Rect(x, y, inner, helpHeight), help, 11f, GuitarUI.TextDim, false, TextAnchor.UpperLeft, true);
+            return y + helpHeight + 12f * pt;
+        }
 
-            // Diagnostics.
-            GuitarUI.Label(new Rect(sheet.x + pad, y, inner - switchSize.x, 48f * pt), "Диагностика", 15f, GuitarUI.Text, true, TextAnchor.MiddleLeft);
-            bool diagnostics = GuitarUI.Switch(new Rect(sheet.xMax - pad - switchSize.x, y + (48f * pt - switchSize.y) * 0.5f, switchSize.x, switchSize.y), m_Diagnostics);
+        void DrawDiagnosticsSwitch(float x, float y, float inner, float pt)
+        {
+            var size = SwitchSize(pt);
+            GuitarUI.Label(new Rect(x, y, inner - size.x, 48f * pt), "Диагностика", 15f, GuitarUI.Text, true, TextAnchor.MiddleLeft);
+            bool diagnostics = GuitarUI.Switch(new Rect(x + inner - size.x, y + (48f * pt - size.y) * 0.5f, size.x, size.y), m_Diagnostics);
             if (diagnostics != m_Diagnostics)
             {
                 m_Diagnostics = diagnostics;
@@ -266,12 +333,13 @@ namespace GuitarAR
                 {
                 }
             }
-            return sheet.yMax;
         }
 
-        static void Separator(Rect sheet, float pad, float y)
+        /// <summary>A thin line across a column; returns the y below it.</summary>
+        static float Separator(float x, float y, float width)
         {
-            GuitarUI.Fill(new Rect(sheet.x + pad, y, sheet.width - pad * 2f, 1f), 0f, GuitarUI.Track);
+            GuitarUI.Fill(new Rect(x, y, width, 1f), 0f, GuitarUI.Track);
+            return y + 1f;
         }
 
         /// <summary>What to do next, fading in and out. Returns its bottom (or the top it was given, when hidden).</summary>

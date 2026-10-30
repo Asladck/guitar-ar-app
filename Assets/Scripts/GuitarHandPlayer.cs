@@ -99,8 +99,14 @@ namespace GuitarAR
         // that comes a little early is held back to land on the beat.
         const int k_TempoSamples = 4;
         const float k_DefaultSlot = 0.15f;     // Seconds per slot until the player's tempo is known.
-        const float k_MinGroupStep = 0.13f;    // Seconds between the strokes of a group: the player's slot,
-        const float k_MaxGroupStep = 0.2f;     // but no quicker or slower than these.
+        // Seconds between the strokes of a group: the player's choice, or (following their tempo)
+        // their slot, kept within this share of the choice either way.
+        public const float MinPairStep = 0.08f;
+        public const float MaxPairStep = 0.3f;
+        const float k_DefaultPairStep = 0.15f;
+        const float k_PairTempoRange = 0.3f;
+        const string k_PairStepKey = "GuitarAR.PairStep";
+        const string k_PairTempoKey = "GuitarAR.PairFollowsTempo";
         const float k_MinSlot = 0.07f;         // Shortest and longest slot that count towards the tempo.
         const float k_MaxSlot = 0.5f;
         const float k_MaxRhythmDelay = 0.07f;  // Seconds; the most a strike is held back.
@@ -133,6 +139,8 @@ namespace GuitarAR
 
         static string s_Diagnostic = "рука: -";
         static bool s_Assist = true;
+        static float s_PairStep = k_DefaultPairStep;
+        static bool s_PairFollowsTempo = true;
 
         readonly float[] m_Points = new float[k_MaxHands * k_JointCount * 3];
         readonly int[] m_Chirality = new int[k_MaxHands];
@@ -175,6 +183,34 @@ namespace GuitarAR
             {
                 s_Assist = value;
                 Save(k_AssistKey, value ? 1 : 0);
+            }
+        }
+
+        /// <summary>Seconds between the quick strokes of a pattern's group (its pairs), as set by the player.</summary>
+        public static float PairStep
+        {
+            get => s_PairStep;
+            set
+            {
+                s_PairStep = Mathf.Clamp(value, MinPairStep, MaxPairStep);
+                try
+                {
+                    PlayerPrefs.SetFloat(k_PairStepKey, s_PairStep);
+                }
+                catch (System.Exception)
+                {
+                }
+            }
+        }
+
+        /// <summary>Whether a group's strokes follow the player's tempo, around <see cref="PairStep"/>.</summary>
+        public static bool PairFollowsTempo
+        {
+            get => s_PairFollowsTempo;
+            set
+            {
+                s_PairFollowsTempo = value;
+                Save(k_PairTempoKey, value ? 1 : 0);
             }
         }
 
@@ -278,6 +314,8 @@ namespace GuitarAR
             try
             {
                 s_Assist = PlayerPrefs.GetInt(k_AssistKey, 1) != 0;
+                s_PairStep = Mathf.Clamp(PlayerPrefs.GetFloat(k_PairStepKey, k_DefaultPairStep), MinPairStep, MaxPairStep);
+                s_PairFollowsTempo = PlayerPrefs.GetInt(k_PairTempoKey, 1) != 0;
                 s_Pattern = Mathf.Clamp(PlayerPrefs.GetInt(k_PatternKey, 0), 0, k_Patterns.Length - 1);
                 m_ChordReader.CurrentMode = (GuitarChordReader.Mode)Mathf.Clamp(PlayerPrefs.GetInt(k_ChordModeKey, 0), 0, 2);
             }
@@ -593,10 +631,13 @@ namespace GuitarAR
             if (m_PatternStep == 0)
                 m_BarStart = Time.timeAsDouble + delay;
 
-            // A group is a quick flick of the wrist, whatever the tempo.
+            // A group is a quick flick of the wrist, as quick as the player chose.
             float slotSeconds = m_Slot > 0f ? m_Slot : k_DefaultSlot;
-            float groupStep = Mathf.Clamp(slotSeconds, k_MinGroupStep, k_MaxGroupStep);
+            float groupStep = s_PairFollowsTempo
+                ? Mathf.Clamp(slotSeconds, s_PairStep * (1f - k_PairTempoRange), s_PairStep * (1f + k_PairTempoRange))
+                : s_PairStep;
             int end = pattern.GroupEnd(m_PatternStep);
+            m_Pending.Clear();  // What's left of the last group gives way to this one.
             Play(guitar, pattern.Strokes[m_PatternStep], volume, delay);
             for (int i = m_PatternStep + 1; i < end; i++)
             {
@@ -608,7 +649,13 @@ namespace GuitarAR
                     Volume = volume,
                 });
             }
-            m_GroupBusyUntil = Time.timeAsDouble + delay + (pattern.Slots[end - 1] - slot) * groupStep + 0.5f * slotSeconds;
+            // The group's own strokes are already heard; but a slow group mustn't hide the next one.
+            int next = end % pattern.Strokes.Length;
+            int toNext = (pattern.Slots[next] - slot + pattern.Length) % pattern.Length;
+            if (toNext == 0)
+                toNext = pattern.Length;
+            float busy = Mathf.Min((pattern.Slots[end - 1] - slot) * groupStep + 0.5f * slotSeconds, (toNext - 0.5f) * slotSeconds);
+            m_GroupBusyUntil = Time.timeAsDouble + delay + busy;
 
             m_PreviousSlot = slot;
             m_PatternStep = end % pattern.Strokes.Length;
