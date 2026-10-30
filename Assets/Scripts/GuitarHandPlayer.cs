@@ -99,7 +99,8 @@ namespace GuitarAR
         // that comes a little early is held back to land on the beat.
         const int k_TempoSamples = 4;
         const float k_DefaultSlot = 0.15f;     // Seconds per slot until the player's tempo is known.
-        const float k_MaxGroupStep = 0.16f;    // Seconds; the strokes of a group follow each other at least this quickly.
+        const float k_MinGroupStep = 0.13f;    // Seconds between the strokes of a group: the player's slot,
+        const float k_MaxGroupStep = 0.2f;     // but no quicker or slower than these.
         const float k_MinSlot = 0.07f;         // Shortest and longest slot that count towards the tempo.
         const float k_MaxSlot = 0.5f;
         const float k_MaxRhythmDelay = 0.07f;  // Seconds; the most a strike is held back.
@@ -592,9 +593,9 @@ namespace GuitarAR
             if (m_PatternStep == 0)
                 m_BarStart = Time.timeAsDouble + delay;
 
-            // A group is a quick flick of the wrist, however slowly the bar goes.
+            // A group is a quick flick of the wrist, whatever the tempo.
             float slotSeconds = m_Slot > 0f ? m_Slot : k_DefaultSlot;
-            float groupStep = Mathf.Min(slotSeconds, k_MaxGroupStep);
+            float groupStep = Mathf.Clamp(slotSeconds, k_MinGroupStep, k_MaxGroupStep);
             int end = pattern.GroupEnd(m_PatternStep);
             Play(guitar, pattern.Strokes[m_PatternStep], volume, delay);
             for (int i = m_PatternStep + 1; i < end; i++)
