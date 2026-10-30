@@ -99,7 +99,7 @@ namespace GuitarAR
         // that comes a little early is held back to land on the beat.
         const int k_TempoSamples = 4;
         const float k_DefaultSlot = 0.15f;     // Seconds per slot until the player's tempo is known.
-        const float k_MaxGroupStep = 0.11f;    // Seconds; the strokes of a group follow each other at least this quickly.
+        const float k_MaxGroupStep = 0.16f;    // Seconds; the strokes of a group follow each other at least this quickly.
         const float k_MinSlot = 0.07f;         // Shortest and longest slot that count towards the tempo.
         const float k_MaxSlot = 0.5f;
         const float k_MaxRhythmDelay = 0.07f;  // Seconds; the most a strike is held back.
