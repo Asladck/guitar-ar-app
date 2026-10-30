@@ -15,7 +15,16 @@ Built with Unity 6 LTS, Universal Render Pipeline and AR Foundation (ARCore on A
 | `Assets/Scripts/GuitarWearer.cs` | Shared logic for wearing the guitar on a torso: pose, smoothing, pop-in animation |
 | `Assets/Scripts/GuitarBodyAttacher.cs` | Back camera: hangs the guitar on a person found by ARKit body tracking |
 | `Assets/Scripts/GuitarSelfieAttacher.cs` | Front camera: hangs the guitar on you, estimated from your face |
-| `Assets/Scripts/GuitarModeSwitcher.cs` | On-screen buttons switching between *on a person*, *selfie* and *on a surface* |
+| `Assets/Scripts/GuitarStrings.cs` | A guitar's playable strings: screen position, two voices per string, wobble when plucked |
+| `Assets/Scripts/GuitarVoiceFade.cs` | Fades a string's ringing note out when the string is played again, instead of a click |
+| `Assets/Scripts/GuitarStrummer.cs` | Swipe across the strings to strum, tap to pluck, chord buttons |
+| `Assets/Scripts/GuitarSamples.cs` | Plays recordings of a real guitar, one per string and fret, from `Assets/Resources/GuitarSamples` |
+| `Assets/Scripts/GuitarSynth.cs` | Synthesizes plucked-string notes (Karplus-Strong) for notes without a recording |
+| `Tools/make-guitar-samples.py` | Downloads the guitar recordings and cuts them into the notes in `Assets/Resources/GuitarSamples` |
+| `Assets/Plugins/iOS/GuitarAudioSession.mm` | Lets the guitar sound even when the iPhone is in silent mode |
+| `Assets/Scripts/GuitarModeSwitcher.cs` | Switches between *on a person*, *selfie* and *on a surface* |
+| `Assets/Scripts/GuitarHud.cs` | The on-screen interface: chord, hand status, strumming pattern, settings, chord and mode buttons |
+| `Assets/Scripts/GuitarUI.cs` | The interface's look: rounded see-through panels, accent colour, sizes in points, safe area |
 | `Assets/Editor/GuitarARProjectSetup.cs` | **Guitar AR → Set Up Project** menu: URP + AR background, player settings, AR scene |
 | `.claude/skills/` | Unity's agent skills (`npx skills add Unity-Technologies/skills`) |
 
@@ -44,6 +53,7 @@ files and `Library/` the first time it opens.
   developer mode on and ARCore support, then **Build And Run**.
 - **iOS from the command line:** close Unity, connect the iPhone and run
   `Tools/build-ios.sh <device-udid> <apple-team-id>`. It exports the Xcode project, builds it and installs the app.
+  `Tools/run-ios.sh` starts the installed app on the connected iPhone and shows its log in the terminal.
 - **iOS:** switch to iOS, **Build**, open the generated Xcode project on a Mac, set your signing
   team and run on an ARKit-capable iPhone.
 
@@ -60,8 +70,36 @@ floor or table until the translucent plane appears, then tap it.
 
 ARKit can't track bodies, track faces and detect planes in the same session, so only one mode runs at a time.
 
+**Playing with your hand:** raise your right index finger and move it across the strings in
+front of the camera. A quick sweep strums (down from the low E, or a lighter up strum), a slow pass
+plucks one string; with the finger down nothing plays. Your **left hand picks the chord** (button *Аккорд*): on the neck, put your fingertips where the
+chord's fingering goes (cyan dots show where); with gestures, hold up fingers (1 = Em, 2 = Am,
+3 = C, 4 = G, index + little = D, little = E); or use the chord buttons. **Strum help** (on by
+default) makes any quick pass through a wide zone around the strings a full strum, so grazing a
+string on the way doesn't make stray notes. The settings button (top right) holds strum help, how
+the chord is picked and the diagnostics; the card under it picks the strumming pattern and shows
+the next strike and the beat. With a pattern, strike the way its next group starts (a muted stroke
+is a down stroke) and that group plays in time; the hand's way back between strikes plays nothing.
+
+**Playing:** once the guitar is on screen, swipe across its strings to strum, or tap a string to
+pluck it. Pick a chord (Em, Am, C, G, D, E) with the buttons above the mode buttons. When the
+guitar is far away and its strings are too close together to aim at, a tap strums all six. The
+notes are recordings of a real classical guitar, one for each string and fret, played gently and
+hard, each starting right at the pluck and made equally loud; `python3 Tools/make-guitar-samples.py`
+makes them again. A guitar model you import
+is playable if its strings are children named `String1` (low E) to `String6` and it has a
+`GuitarStrings` component.
+
+## Credits
+
+Guitar recordings: the Musical Instrument Samples of the University of Iowa Electronic Music
+Studios (Raimundo 118 classical guitar, played by Brian Penkrot),
+<https://theremin.music.uiowa.edu/MISguitar.html>, which "may be downloaded and used for any
+projects, without restrictions".
+
 ## Next steps
 
 - Replace the procedural guitar with a real 3D model (assign it to *Guitar Prefab* on
   `XR Origin → GuitarPlacer`).
-- Pinch to scale / twist to rotate, and tap strings to play notes.
+- Pinch to scale / twist to rotate.
+- Fret notes with a finger on the neck instead of chord buttons.

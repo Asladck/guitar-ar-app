@@ -15,6 +15,9 @@ namespace GuitarAR
         [SerializeField] Color m_FretboardColor = new Color(0.16f, 0.10f, 0.06f);
         [SerializeField] Color m_MetalColor = new Color(0.85f, 0.85f, 0.80f);
 
+        [Tooltip("Overall size. 1 is a full-size acoustic, which looks oversized on a phone screen.")]
+        [SerializeField] float m_Size = 0.84f;
+
         static Material s_PartMaterial;
 
         const int k_StringCount = 6;
@@ -29,7 +32,10 @@ namespace GuitarAR
         void Awake()
         {
             if (transform.childCount == 0)
+            {
                 Build();
+                transform.localScale = Vector3.one * m_Size;
+            }
         }
 
         public void Build()
@@ -86,6 +92,9 @@ namespace GuitarAR
                 box = gameObject.AddComponent<BoxCollider>();
             box.center = new Vector3(0f, 0.06f, 0.36f);
             box.size = new Vector3(0.40f, 0.12f, 1.05f);
+
+            if (gameObject.GetComponent<GuitarStrings>() == null)
+                gameObject.AddComponent<GuitarStrings>();
         }
 
         Transform Part(PrimitiveType type, string partName, Vector3 localPosition, Vector3 localScale, Color color)

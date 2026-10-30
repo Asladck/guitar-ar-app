@@ -53,6 +53,18 @@ namespace GuitarAR
         /// </summary>
         protected virtual bool Mirrored => false;
 
+        /// <summary>
+        /// Extra scale on top of the guitar's own size, e.g. to fit it on screen when the camera
+        /// is close to the person.
+        /// </summary>
+        protected virtual float SizeScale => 1f;
+
+        /// <summary>The guitar's own size before <see cref="SizeScale"/> (1 = full-size acoustic).</summary>
+        protected float BaseSize => m_Guitar != null ? Mathf.Abs(m_BaseScale.z) : 1f;
+
+        /// <summary>How far the neck is raised above horizontal, in degrees.</summary>
+        protected float NeckAngle => m_NeckAngle;
+
         protected virtual void OnDisable()
         {
             IsTracking = false;
@@ -108,7 +120,9 @@ namespace GuitarAR
 
             // Guitar space: +Y is the face, +Z runs up the neck, the origin is the back of the lower bout.
             rotation = Quaternion.LookRotation(neck, forward);
-            position = belly + right * k_RightOffset + forward * k_ForwardOffset - neck * k_BodyCenterZ;
+            // Offsets are for a full-size guitar; shrink them with it.
+            float size = BaseSize * SizeScale;
+            position = belly + (right * k_RightOffset + forward * k_ForwardOffset - neck * k_BodyCenterZ) * size;
             return true;
         }
 
@@ -122,7 +136,7 @@ namespace GuitarAR
 
             // Overshoot slightly on the way in so it "pops", and shrink smoothly on the way out.
             float scale = show ? EaseOutBack(m_Visibility) : Mathf.SmoothStep(0f, 1f, m_Visibility);
-            var baseScale = m_BaseScale;
+            var baseScale = m_BaseScale * SizeScale;
             if (Mirrored)
                 baseScale.x = -baseScale.x;
             m_Guitar.transform.localScale = baseScale * scale;

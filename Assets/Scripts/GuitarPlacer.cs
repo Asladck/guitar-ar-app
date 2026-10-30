@@ -32,7 +32,11 @@ namespace GuitarAR
 
         void Update()
         {
-            if (!TryGetTapPosition(out var screenPosition) || GuitarModeSwitcher.IsOverButton(screenPosition))
+            if (!TryGetTapPosition(out var screenPosition) || GuitarUI.IsOverUI(screenPosition))
+                return;
+
+            // Taps on the strings play the guitar instead of moving it.
+            if (m_Guitar != null && GuitarStrummer.IsOnStrings(screenPosition))
                 return;
 
             if (!m_RaycastManager.Raycast(screenPosition, s_Hits, TrackableType.PlaneWithinPolygon))
