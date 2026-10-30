@@ -37,6 +37,7 @@ static class LogicTests
             Test("Easy: провал кадров не сдвигает сетку и не играет в прошлом", EasySkipsPastSlots),
             Test("Easy: остановка прекращает выдачу нот", EasyStopCancels),
             Test("Assisted: ожидание не больше 40 мс и никогда в прошлом", AssistedSnapping),
+            Test("Assisted: звучат только удары рисунка", AssistedFollowsPattern),
             Test("Free: удар сразу", FreePlaysNow),
             Test("Паттерны: поп = ↓ _ ↓ ↑ _ ↑ ↓ ↑", PopPatternData),
             Test("Жесты по углам суставов, в любом повороте руки", GesturesByAngles),
@@ -302,24 +303,66 @@ static class LogicTests
 
     static void AssistedSnapping()
     {
-        var engine = new GuitarRhythmEngine { Mode = PlayMode.Assisted, Bpm = 120, Metronome = true };
+        var engine = new GuitarRhythmEngine { Mode = PlayMode.Assisted, Bpm = 120, Metronome = true, Pattern = StrumPattern.All[0] };
         var clicks = RunEngine(engine, 0, 1, () => 1 / 60.0);
         Check(clicks.Count > 0 && clicks.TrueForAll(s => s.IsClick), "метроном щёлкает");
-        double slot = 0.25;  // Eighths at 120.
-        foreach (double offset in new[] { 0.0, 0.01, 0.03, 0.039, 0.045, 0.1, 0.2, 0.249 })
+        // Простой: downs on the beats (0.5 s at 120). The first down starts the bar at 2.0.
+        Check(engine.OnStrike(StrikeDirection.Down, 1, 2.0, out var first) && first.Time == 2.0, "первый взмах вниз начинает такт сразу");
+        RunEngine(engine, 2.0, 2.5 - 0.02, () => 1 / 60.0);
+        foreach (double offset in new[] { 0.0, 0.01, 0.03, 0.039, 0.045, 0.1 })
         {
-            // A strike made `offset` before a grid slot.
-            double now = 2.0 - offset;
-            var e = new GuitarRhythmEngine { Mode = PlayMode.Assisted, Bpm = 120 };
-            RunEngine(e, 0, now, () => 1 / 60.0);
-            e.OnStrike(StrikeDirection.Down, 1, now, out var sound);
+            // A down strike `offset` before the second beat (2.5 s).
+            var e = new GuitarRhythmEngine { Mode = PlayMode.Assisted, Bpm = 120, Pattern = StrumPattern.All[0] };
+            e.OnStrike(StrikeDirection.Down, 1, 2.0, out _);
+            double now = 2.5 - offset;
+            RunEngine(e, 2.0, now, () => 1 / 60.0);
+            Check(e.OnStrike(StrikeDirection.Down, 1, now, out var sound), $"за {offset * 1000:0} мс до доли: играет");
             double wait = sound.Time - now;
             Check(wait >= 0, $"за {offset * 1000:0} мс до доли: не в прошлом");
             Check(wait <= e.MaxAssistWait + 1e-6, $"за {offset * 1000:0} мс до доли: ждёт {wait * 1000:0} мс");
             bool snapped = offset <= e.MaxAssistWait + 1e-9;
-            Check(snapped ? Math.Abs(sound.Time - 2.0) < 1e-6 : wait == 0, $"за {offset * 1000:0} мс до доли: {(snapped ? "на долю" : "сразу")}");
+            Check(snapped ? Math.Abs(sound.Time - 2.5) < 1e-6 : wait == 0, $"за {offset * 1000:0} мс до доли: {(snapped ? "на долю" : "сразу")}");
         }
-        Check(slot > 0, "");
+        Check(true, "");
+    }
+
+    static void AssistedFollowsPattern()
+    {
+        // Поп: ↓ _ ↓ ↑ _ ↑ ↓ ↑ in eighths (0.25 s at 120).
+        var e = new GuitarRhythmEngine { Mode = PlayMode.Assisted, Bpm = 120, Pattern = StrumPattern.All[1] };
+        Check(!e.OnStrike(StrikeDirection.Up, 1, 1.0, out _) && e.LastRejection == "начни с ↓", "начинать надо с ↓");
+        Check(e.OnStrike(StrikeDirection.Down, 1, 1.0, out _), "↓ на 1");
+        // Down-up all the time, on every eighth: only the pattern's strokes sound.
+        var played = new System.Text.StringBuilder("D");
+        for (int k = 1; k < 16; k++)
+        {
+            double now = 1.0 + k * 0.25;
+            RunEngine(e, now - 0.25, now, () => 1 / 60.0);
+            var dir = k % 2 == 0 ? StrikeDirection.Down : StrikeDirection.Up;
+            played.Append(e.OnStrike(dir, 1, now, out var s) ? (s.Kind == StrumKind.Up ? "U" : "D") : "_");
+        }
+        Check(played.ToString() == "D_DU_UDUD_DU_UDU", "звучит только рисунок: " + played);
+        // The wrong way on a stroke's slot plays nothing either.
+        var w = new GuitarRhythmEngine { Mode = PlayMode.Assisted, Bpm = 120, Pattern = StrumPattern.All[1] };
+        w.OnStrike(StrikeDirection.Down, 1, 1.0, out _);
+        RunEngine(w, 1.0, 1.75, () => 1 / 60.0);
+        Check(!w.OnStrike(StrikeDirection.Down, 1, 1.75, out _) && w.LastRejection == "не по рисунку", "↓ там, где в рисунке ↑, не звучит");
+        // A rest between strokes: a swing near the 200 ms rest slot is ignored too.
+        var r = new GuitarRhythmEngine { Mode = PlayMode.Assisted, Bpm = 120, Pattern = StrumPattern.All[0] };
+        r.OnStrike(StrikeDirection.Down, 1, 1.0, out _);
+        RunEngine(r, 1.0, 1.3, () => 1 / 60.0);
+        Check(!r.OnStrike(StrikeDirection.Down, 1, 1.3, out _), "Простой: взмах между четвертями не звучит");
+        // A second swing on a slot already played does nothing.
+        var f = new GuitarRhythmEngine { Mode = PlayMode.Assisted, Bpm = 120, Pattern = StrumPattern.All[1] };
+        f.OnStrike(StrikeDirection.Down, 1, 1.0, out _);
+        Check(!f.OnStrike(StrikeDirection.Down, 1, 1.05, out _), "дубль на той же доле не звучит");
+        // Шестёрка: the down on slot 2 is a muted stroke.
+        var g = new GuitarRhythmEngine { Mode = PlayMode.Assisted, Bpm = 120, Pattern = StrumPattern.All[2] };
+        g.OnStrike(StrikeDirection.Down, 1, 1.0, out _);
+        RunEngine(g, 1.0, 1.5, () => 1 / 60.0);
+        Check(g.OnStrike(StrikeDirection.Down, 1, 1.5, out var mute) && mute.Kind == StrumKind.Mute, "взмах вниз на ✕ звучит глушением");
+        // After a pause the bar starts over.
+        Check(g.OnStrike(StrikeDirection.Down, 1, 9.0, out var again) && again.Time == 9.0, "после паузы такт заново");
     }
 
     static void FreePlaysNow()

@@ -36,6 +36,8 @@ namespace GuitarAR
         public string LastChange { get; private set; }
         public float LastChangeTime { get; private set; } = float.NegativeInfinity;
         public bool LastAssistSnapped { get; private set; }
+        /// <summary>Assisted: why the last swing played nothing (null if it played).</summary>
+        public string LastAssistRejection { get; private set; }
         public float LastStrikeTime { get; private set; } = float.NegativeInfinity;
 
         // For the diagnostics.
@@ -103,6 +105,9 @@ namespace GuitarAR
         /// <summary>Where the music is: beat 0..3, how far into it, the slot in the pattern. False while nothing keeps time.</summary>
         public bool TryGetPosition(out int beat, out float phase, out int slot) => m_Engine.TryGetPosition(AudioSettings.dspTime, out beat, out phase, out slot);
 
+        /// <summary>Assisted: the slot in the bar of the pattern's next stroke to play.</summary>
+        public int NextAssistedSlot => m_Engine.NextAssistedSlot(AudioSettings.dspTime);
+
         public string DiagnosticText => $"музыка: {Mode}, {Bpm:0} уд/мин, {(IsPlaying ? "играет" : "стоит")}, пропущено долей {m_Skipped}\n{m_LastTiming}";
 
         static void Save(string key, int value)
@@ -156,7 +161,9 @@ namespace GuitarAR
             double now = AudioSettings.dspTime;
             LastStrikeTime = Time.unscaledTime;
             bool wasPlaying = m_Engine.IsPlaying;
-            if (m_Engine.OnStrike(strike.Direction, strike.Strength, now, out var sound))
+            bool played = m_Engine.OnStrike(strike.Direction, strike.Strength, now, out var sound);
+            LastAssistRejection = Mode == PlayMode.Assisted ? m_Engine.LastRejection : null;
+            if (played)
             {
                 LastAssistSnapped = sound.Time > now;
                 PlayStroke(sound.Kind, 0.6f + 0.4f * sound.Strength, sound.Time);
