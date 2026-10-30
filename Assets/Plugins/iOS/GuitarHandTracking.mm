@@ -24,6 +24,7 @@ static int s_Chirality[kMaxHands];
 static int s_HandCount;
 static double s_Timestamp;
 static double s_LastFrameTimestamp;
+static double s_ShownTimestamp;
 static volatile BOOL s_Busy;
 static dispatch_queue_t s_Queue;
 static VNDetectHumanHandPoseRequest* s_Request;
@@ -66,6 +67,21 @@ static CGImagePropertyOrientation UprightOrientation(CGAffineTransform toView)
     return upX < 0 ? kCGImagePropertyOrientationRight : kCGImagePropertyOrientationLeft;
 }
 
+// How the app is shown now. Asked of iOS itself rather than worked out from Unity's orientation
+// names, whose landscape left and right are the other way round from UIKit's.
+static UIInterfaceOrientation CurrentInterfaceOrientation(int fallback)
+{
+    for (UIScene* scene in UIApplication.sharedApplication.connectedScenes)
+    {
+        if (![scene isKindOfClass:[UIWindowScene class]])
+            continue;
+        UIInterfaceOrientation orientation = ((UIWindowScene*)scene).interfaceOrientation;
+        if (orientation != UIInterfaceOrientationUnknown)
+            return orientation;
+    }
+    return (UIInterfaceOrientation)fallback;
+}
+
 // A point Vision found in the turned (upright) image, origin top left, back in the camera image.
 static CGPoint ToImage(CGPoint upright, CGImagePropertyOrientation orientation)
 {
@@ -80,7 +96,7 @@ static CGPoint ToImage(CGPoint upright, CGImagePropertyOrientation orientation)
 
 extern "C" void GuitarHands_Process(void* nativeSession, float viewWidth, float viewHeight, int interfaceOrientation)
 {
-    if (nativeSession == NULL || s_Busy)
+    if (nativeSession == NULL)
         return;
 
     GuitarARNativeSession* native = (GuitarARNativeSession*)nativeSession;
@@ -89,7 +105,9 @@ extern "C" void GuitarHands_Process(void* nativeSession, float viewWidth, float 
 
     ARSession* session = (__bridge ARSession*)native->session;
     ARFrame* frame = session.currentFrame;
-    if (frame == nil || frame.timestamp == s_LastFrameTimestamp)
+    if (frame != nil)
+        s_ShownTimestamp = frame.timestamp;
+    if (s_Busy || frame == nil || frame.timestamp == s_LastFrameTimestamp)
         return;
     s_LastFrameTimestamp = frame.timestamp;
 
@@ -103,7 +121,7 @@ extern "C" void GuitarHands_Process(void* nativeSession, float viewWidth, float 
 
     CVPixelBufferRef image = frame.capturedImage;
     CVPixelBufferRetain(image);
-    CGAffineTransform toView = [frame displayTransformForOrientation:(UIInterfaceOrientation)interfaceOrientation
+    CGAffineTransform toView = [frame displayTransformForOrientation:CurrentInterfaceOrientation(interfaceOrientation)
                                                         viewportSize:CGSizeMake(viewWidth, viewHeight)];
     CGImagePropertyOrientation orientation = UprightOrientation(toView);
     double timestamp = frame.timestamp;
@@ -184,4 +202,11 @@ extern "C" int GuitarHands_Get(float* points, int* chirality, int maxHands, doub
         *timestamp = s_Timestamp;
         return count;
     }
+}
+
+// The time of the camera frame on screen now (the newest), on the same clock as GuitarHands_Get's
+// timestamp: how far behind the hands found are.
+extern "C" double GuitarHands_ShownTime()
+{
+    return s_ShownTimestamp;
 }

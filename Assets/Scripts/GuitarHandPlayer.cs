@@ -148,7 +148,11 @@ namespace GuitarAR
         Vector2 m_Tip;
         double m_TipTime;
         readonly GuitarPointFilter m_TipFilter = new GuitarPointFilter(1.5f, 5f, 1f);
+        // The ring on screen: lighter smoothing and a quicker speed, so it can be carried on to
+        // where the finger is now (tuned on simulated tracking: a third of the error while moving).
+        readonly GuitarPointFilter m_RingFilter = new GuitarPointFilter(3f, 20f, 8f);
         float m_TipConfidence;
+        double m_ShownTime;                     // Camera time of the frame on screen.
         float m_FrameRate;                      // Hand detections per second.
         float m_LastStrumTime = float.NegativeInfinity;
         bool m_LastStrumDown;
@@ -206,8 +210,12 @@ namespace GuitarAR
         /// <summary>Whether the right hand is seen, and whether its index finger is up to play.</summary>
         public HandState RightHand => !m_HasTip ? HandState.NotSeen : m_Raised ? HandState.Ready : HandState.FingerDown;
 
-        /// <summary>The right index fingertip in screen pixels (origin bottom left), while it's seen.</summary>
-        public Vector2 Fingertip => m_TipFilter.Value;
+        /// <summary>
+        /// The right index fingertip in screen pixels (origin bottom left), while it's seen: where
+        /// it is in the camera image on screen now. Finding the hand takes a frame or two, so the
+        /// last place found is carried on along the finger's movement.
+        /// </summary>
+        public Vector2 Fingertip => m_RingFilter.Predict(m_ShownTime, 0.7f, 0.1f, 0.3f);
 
         /// <summary>
         /// The pattern's strokes as symbols, one entry per group that a single strike plays, and
@@ -295,6 +303,7 @@ namespace GuitarAR
                 return;
 
             GuitarHands_Process(subsystem.nativePtr, Screen.width, Screen.height, InterfaceOrientation());
+            m_ShownTime = GuitarHands_ShownTime();
 
             int count = GuitarHands_Get(m_Points, m_Chirality, k_MaxHands, out double timestamp);
             if (timestamp == m_LastTimestamp)
@@ -336,6 +345,7 @@ namespace GuitarAR
                 {
                     m_HasTip = false;
                     m_TipFilter.Reset();
+                    m_RingFilter.Reset();
                 }
                 s_Diagnostic = $"рук: {count}, правая: не видно, {m_FrameRate:0} кадр/с\n{m_ChordReader.Diagnostic}";
                 return;
@@ -352,7 +362,11 @@ namespace GuitarAR
             }
 
             if (m_HasTip && timestamp - m_TipTime > k_MaxGap)
+            {
                 m_TipFilter.Reset();
+                m_RingFilter.Reset();
+            }
+            m_RingFilter.Filter(tip, timestamp);
             var smoothFrom = m_TipFilter.Value;
             var smoothTip = m_TipFilter.Filter(tip, timestamp);
             if (m_HasTip && (m_Raised || wasRaised) && timestamp - m_TipTime <= k_MaxGap)
@@ -766,12 +780,13 @@ namespace GuitarAR
 
         static int InterfaceOrientation()
         {
-            // UIInterfaceOrientation values; Unity's landscape names are the other way round.
+            // UIInterfaceOrientation values, only for when iOS can't be asked (the plugin asks it).
+            // Unity's landscape left (home button on the right) is UIKit's landscape right.
             switch (Screen.orientation)
             {
                 case ScreenOrientation.PortraitUpsideDown: return 2;
-                case ScreenOrientation.LandscapeLeft: return 4;
-                case ScreenOrientation.LandscapeRight: return 3;
+                case ScreenOrientation.LandscapeLeft: return 3;
+                case ScreenOrientation.LandscapeRight: return 4;
                 default: return 1;
             }
         }
@@ -782,6 +797,9 @@ namespace GuitarAR
 
         [DllImport("__Internal")]
         static extern int GuitarHands_Get([Out] float[] points, [Out] int[] chirality, int maxHands, out double timestamp);
+
+        [DllImport("__Internal")]
+        static extern double GuitarHands_ShownTime();
 #endif
     }
 }
