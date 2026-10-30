@@ -220,18 +220,16 @@ namespace GuitarAR
                 }
                 case PlayMode.Assisted:
                 {
-                    // The metronome: four beats, the one now lit, and whether the last strike was nudged.
-                    float size = Mathf.Min(row.height - 8f * pt, 22f * pt);
-                    for (int i = 0; i < GuitarRhythmEngine.BeatsPerBar; i++)
-                    {
-                        var center = new Vector2(row.x + size * 0.5f + i * (size + 8f * pt), row.center.y);
-                        bool now = keepsTime && i == beat;
-                        float grow = now ? 1f + 0.35f * (1f - phase) : 1f;
-                        GuitarUI.Dot(center, size * grow * (i == 0 ? 1f : 0.8f), now ? GuitarUI.Accent : GuitarUI.Track);
-                    }
-                    float x = row.x + 4f * (size + 8f * pt) + 4f * pt;
-                    string last = Time.unscaledTime - m_Music.LastStrikeTime < 1.5f ? (m_Music.LastAssistSnapped ? "в долю" : "сразу") : "взмахивай в такт";
-                    GuitarUI.Label(new Rect(x, row.y, row.xMax - x, row.height), last, 12f, GuitarUI.TextDim, false, TextAnchor.MiddleLeft);
+                    // The pattern to strum yourself: the slot now lit, the next stroke to play
+                    // outlined, and what became of the last swing.
+                    float statusWidth = 92f * pt;
+                    var cells = new Rect(row.x, row.y, row.width - statusWidth - 6f * pt, row.height);
+                    DrawPatternSlots(cells, keepsTime ? slot : -1, pt, m_Music.NextAssistedSlot);
+                    bool recent = Time.unscaledTime - m_Music.LastStrikeTime < 1.2f;
+                    string rejection = m_Music.LastAssistRejection;
+                    string last = !recent ? "бей по рисунку" : rejection ?? (m_Music.LastAssistSnapped ? "в долю" : "сразу");
+                    GuitarUI.Label(new Rect(cells.xMax + 6f * pt, row.y, statusWidth, row.height), last, 12f,
+                        recent && rejection != null ? GuitarUI.Bad : GuitarUI.TextDim, recent, TextAnchor.MiddleLeft);
                     break;
                 }
                 default:
@@ -241,8 +239,11 @@ namespace GuitarAR
             return card.yMax;
         }
 
-        /// <summary>Easy's pattern, one cell per slot (↓ ↑ ✕, or · for a rest), the one playing now lit.</summary>
-        void DrawPatternSlots(Rect area, int now, float pt)
+        /// <summary>
+        /// The pattern, one cell per slot (↓ ↑ ✕, or · for a rest), the slot now lit, and (when
+        /// strumming yourself) the next stroke to play outlined.
+        /// </summary>
+        void DrawPatternSlots(Rect area, int now, float pt, int next = -1)
         {
             var pattern = m_Music.CurrentPattern;
             float gap = 3f * pt;
@@ -259,6 +260,8 @@ namespace GuitarAR
                 bool lit = i == now;
                 bool onBeat = i % pattern.SlotsPerBeat == 0;
                 GuitarUI.Fill(cell, Mathf.Min(8f * pt, width * 0.4f), lit ? GuitarUI.Accent : onBeat ? GuitarUI.Track : new Color(1f, 1f, 1f, 0.04f));
+                if (i == next && !lit)
+                    GuitarUI.Outline(cell, Mathf.Min(8f * pt, width * 0.4f), Mathf.Max(2f, 2f * pt), GuitarUI.Accent);
                 GuitarUI.Label(cell, symbol, 15f, lit ? GuitarUI.OnAccent : GuitarUI.Text, true);
             }
         }
@@ -529,7 +532,7 @@ namespace GuitarAR
                             : null;
                     return $"Взмахни {strum} рукой над струнами — бой начнётся сам";
                 case PlayMode.Assisted:
-                    return GuitarStrummer.HasPlayed ? null : "Сам: каждый взмах — удар, приложение подровняет его к доле";
+                    return GuitarStrummer.HasPlayed ? null : "Бей сам по рисунку: звучат только удары рисунка, начни с ↓";
                 default:
                     return GuitarStrummer.HasPlayed ? null : "Сам: каждый взмах вниз или вверх — один удар";
             }

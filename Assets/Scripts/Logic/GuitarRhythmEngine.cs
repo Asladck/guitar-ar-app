@@ -8,7 +8,11 @@ namespace GuitarAR
     {
         /// <summary>Automatic strumming: a swing starts a ready pattern that keeps its own tempo.</summary>
         Easy,
-        /// <summary>Your own strumming, each swing nudged (at most 40 ms) onto the beat.</summary>
+        /// <summary>
+        /// Your own strumming, guided by the pattern: a swing plays only if the pattern has a
+        /// stroke that way on the slot nearest to it (the hand coming back between strokes plays
+        /// nothing), as that stroke (a muted one too), nudged at most 40 ms onto the slot.
+        /// </summary>
         Assisted,
         /// <summary>Your own strumming, played at once, as it is.</summary>
         Free,
@@ -104,6 +108,7 @@ namespace GuitarAR
         public float MaxLookahead = 0.3f;   // ...or 1.5 frames, up to this, when frames come slowly.
         public float MaxAssistWait = 0.04f; // The most Assisted holds a strike back to land on the grid.
         public float StartLead = 0.02f;     // Easy's first stroke comes this soon after the swing that starts it.
+        public float AssistRestart = 2f;    // Assisted: after this long without a stroke, the next one starts the bar over.
 
         float m_Bpm = 90f;
         PlayMode m_Mode = PlayMode.Easy;
@@ -112,6 +117,8 @@ namespace GuitarAR
         long m_NextSlot;
         double m_NextTime;
         double m_LastUpdate = double.NaN;
+        double m_LastAssistTime = double.NegativeInfinity;
+        long m_LastAssistSlot = long.MinValue;
 
         public bool Metronome;
 
@@ -131,6 +138,7 @@ namespace GuitarAR
                 m_Mode = value;
                 IsPlaying = false;
                 m_ClockRunning = false;
+                m_LastAssistTime = double.NegativeInfinity;
             }
         }
 
@@ -139,16 +147,21 @@ namespace GuitarAR
             get => m_Pattern;
             set
             {
-                if (value != null)
-                    m_Pattern = value;
+                if (value == null || value == m_Pattern)
+                    return;
+                m_Pattern = value;
+                m_LastAssistTime = double.NegativeInfinity;  // Assisted starts the new pattern's bar with the next swing.
             }
         }
 
         /// <summary>Easy only: whether the pattern is playing.</summary>
         public bool IsPlaying { get; private set; }
 
-        /// <summary>Slots in Easy follow the pattern; Assisted's grid is in eighths.</summary>
-        int SlotsPerBeat => m_Mode == PlayMode.Easy ? m_Pattern.SlotsPerBeat : 2;
+        /// <summary>The grid's slots are the pattern's (eighths, or triplets for Восьмёрка).</summary>
+        int SlotsPerBeat => m_Pattern.SlotsPerBeat;
+
+        /// <summary>Assisted: why the last swing played nothing, or null if it played.</summary>
+        public string LastRejection { get; private set; }
 
         public double SlotSeconds => 60.0 / m_Bpm / SlotsPerBeat;
 
@@ -187,32 +200,95 @@ namespace GuitarAR
                     return false;
 
                 case PlayMode.Assisted:
-                    if (!m_ClockRunning)
-                        StartClock(now);
-                    sound.Time = AssistedTime(now);
-                    break;
+                    return AssistedStrike(direction, strength, now, out sound);
 
                 default:
                     sound.Time = now;
-                    break;
+                    sound.Kind = direction == StrikeDirection.Down ? StrumKind.Down : StrumKind.Up;
+                    sound.Strength = strength;
+                    return true;
             }
-            sound.Kind = direction == StrikeDirection.Down ? StrumKind.Down : StrumKind.Up;
-            sound.Strength = strength;
+        }
+
+        static bool Matches(StrumKind kind, StrikeDirection direction) => (kind == StrumKind.Up) == (direction == StrikeDirection.Up);
+
+        /// <summary>
+        /// Assisted: the stroke the pattern has on the slot nearest to now, if it goes the way of
+        /// the swing and that slot wasn't played yet. After a pause the bar starts over with the
+        /// swing, which then must go the way of the pattern's first stroke.
+        /// </summary>
+        bool AssistedStrike(StrikeDirection direction, float strength, double now, out ScheduledSound sound)
+        {
+            sound = new ScheduledSound();
+            PatternHit hit;
+            long slotIndex;
+            double slotTime;
+            if (!m_ClockRunning || now - m_LastAssistTime > AssistRestart)
+            {
+                hit = m_Pattern.Hits[0];
+                if (!Matches(hit.Kind, direction))
+                {
+                    LastRejection = hit.Kind == StrumKind.Up ? "начни с ↑" : "начни с ↓";
+                    return false;
+                }
+                // The bar starts with this swing.
+                m_ClockRunning = true;
+                m_NextSlot = slotIndex = hit.Position;
+                m_NextTime = slotTime = now;
+            }
+            else
+            {
+                double slot = SlotSeconds;
+                double position = m_NextSlot - (m_NextTime - now) / slot;
+                slotIndex = (long)Math.Round(position);
+                slotTime = m_NextTime - (m_NextSlot - slotIndex) * slot;
+                if (slotIndex <= m_LastAssistSlot)
+                {
+                    LastRejection = "эта доля уже сыграна";
+                    return false;
+                }
+                int inBar = (int)(slotIndex % m_Pattern.Length);
+                hit = default(PatternHit);
+                bool found = false;
+                foreach (var h in m_Pattern.Hits)
+                {
+                    if (h.Position == inBar && Matches(h.Kind, direction))
+                    {
+                        hit = h;
+                        found = true;
+                    }
+                }
+                if (!found)
+                {
+                    LastRejection = "не по рисунку";
+                    return false;
+                }
+            }
+
+            LastRejection = null;
+            m_LastAssistSlot = slotIndex;
+            m_LastAssistTime = now;
+            sound.Time = slotTime >= now && slotTime - now <= MaxAssistWait + 1e-9 ? slotTime : now;
+            sound.Kind = hit.Kind;
+            sound.Strength = Math.Max(0f, Math.Min(1f, 0.5f * hit.Strength + 0.5f * strength));
             return true;
         }
 
         /// <summary>
-        /// When Assisted plays a strike made now: on the next grid slot if that's at most
-        /// <see cref="MaxAssistWait"/> away, else at once. Never earlier than now.
+        /// Assisted: the pattern's next stroke after the last one played (its slot in the bar), or
+        /// -1 while the bar hasn't started.
         /// </summary>
-        public double AssistedTime(double now)
+        public int NextAssistedSlot(double now)
         {
-            if (!m_ClockRunning)
-                return now;
-            double slot = SlotSeconds;
-            double ahead = m_NextTime - now;  // The grid's next handed-out slot is at or after now.
-            double next = ahead >= 0 ? m_NextTime - Math.Floor(ahead / slot) * slot : m_NextTime + Math.Ceiling(-ahead / slot) * slot;
-            return next - now <= MaxAssistWait + 1e-9 ? next : now;
+            if (m_Mode != PlayMode.Assisted || !m_ClockRunning || now - m_LastAssistTime > AssistRestart)
+                return m_Pattern.Hits[0].Position;
+            int last = (int)(m_LastAssistSlot % m_Pattern.Length);
+            foreach (var h in m_Pattern.Hits)
+            {
+                if (h.Position > last)
+                    return h.Position;
+            }
+            return m_Pattern.Hits[0].Position;
         }
 
         /// <summary>
@@ -244,7 +320,7 @@ namespace GuitarAR
             {
                 if (m_NextTime >= now - 0.002)
                 {
-                    long inBar = easy ? m_NextSlot % m_Pattern.Length : m_NextSlot % (perBeat * BeatsPerBar);
+                    long inBar = m_NextSlot % m_Pattern.Length;
                     if (easy)
                     {
                         foreach (var hit in m_Pattern.Hits)
@@ -283,8 +359,7 @@ namespace GuitarAR
             double beats = slots / perBeat;
             beat = (int)(Math.Floor(beats) % BeatsPerBar);
             beatPhase = (float)(beats - Math.Floor(beats));
-            int barLength = m_Mode == PlayMode.Easy ? m_Pattern.Length : perBeat * BeatsPerBar;
-            slotInBar = (int)(Math.Floor(slots) % barLength);
+            slotInBar = (int)(Math.Floor(slots) % m_Pattern.Length);
             return true;
         }
     }
